@@ -1,0 +1,17 @@
+{
+  "plan": [
+    ["prove_http3_roundtrip"],
+    ["add_tick_loop"],
+    ["add_input_path"],
+    ["add_state_sync"]
+  ],
+  "status": "ok",
+  "notes": {
+    "prove_http3_roundtrip": "One message round-trips between an Elixir client and a standalone Godot-side process over HTTP/3. No game state, no loop.",
+    "add_tick_loop": "A server-side loop ticks on an interval and holds one piece of state (e.g. a player's position). No input path yet.",
+    "add_input_path": "Client input reaches the tick loop and updates that state.",
+    "add_state_sync": "Server pushes updated state back to the client, which renders it. This is the first genuine playing loop: one entity moving in one empty room."
+  },
+  "generated_by": "mcp__taskweft__plan against bootstrap-domain.json in this repo",
+  "generated_on": "2026-07-17"
+}

@@ -1,0 +1,62 @@
+name: flow-runtime
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "flow-toolchain/**"
+      - ".github/workflows/flow-runtime.yml"
+  pull_request:
+    paths:
+      - "flow-toolchain/**"
+      - ".github/workflows/flow-runtime.yml"
+
+jobs:
+  hello-actor-end-to-end:
+    name: hello_actor_test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install Jinja2 (ProtocolVersion.h codegen)
+        run: pip install "Jinja2==3.1.6" "MarkupSafe==2.1.3"
+
+      - name: Install autotools (Linux) - libbacktrace, a transitive Boost dep, needs these
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y autoconf autoconf-archive automake libtool
+
+      - name: Install autotools (macOS) - libbacktrace, a transitive Boost dep, needs these
+        if: runner.os == 'macOS'
+        run: brew install autoconf autoconf-archive automake libtool
+
+      - name: Set up vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgDirectory: "${{ runner.temp }}/vcpkg"
+          vcpkgGitCommitId: "908da3a305a0a8028d9602ab241b433652b3df69"
+
+      - name: Configure
+        run: >
+          cmake -S flow-toolchain -B build
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_TOOLCHAIN_FILE=${{ runner.temp }}/vcpkg/scripts/buildsystems/vcpkg.cmake
+
+      - name: Build
+        run: cmake --build build --config Release --target hello_actor_test -j 2
+
+      - name: Run the real actor end-to-end
+        shell: bash
+        run: |
+          set -euo pipefail
+          exe="build/hello_actor_test"
+          [ -f "$exe" ] || exe="build/Release/hello_actor_test.exe"
+          [ -f "$exe" ] || exe="build/hello_actor_test.exe"
+          "$exe"

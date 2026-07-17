@@ -10,6 +10,10 @@
       "params": [],
       "body": [{ "pointer/set": "/milestone/stack", "value": "flow_toolchain_ready" }]
     },
+    "vendor_picoquic_into_flow": {
+      "params": [],
+      "body": [{ "pointer/set": "/milestone/stack", "value": "picoquic_vendored" }]
+    },
     "prove_http3_roundtrip": {
       "params": [],
       "body": [{ "pointer/set": "/milestone/stack", "value": "http3_roundtrip" }]
@@ -35,6 +39,7 @@
           "name": "sequential_increments",
           "subtasks": [
             ["setup_flow_toolchain"],
+            ["vendor_picoquic_into_flow"],
             ["prove_http3_roundtrip"],
             ["add_tick_loop"],
             ["add_input_path"],

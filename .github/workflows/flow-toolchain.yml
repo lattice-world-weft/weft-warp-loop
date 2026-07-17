@@ -1,0 +1,55 @@
+name: flow-toolchain
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "flow-toolchain/**"
+      - ".github/workflows/flow-toolchain.yml"
+  pull_request:
+    paths:
+      - "flow-toolchain/**"
+      - ".github/workflows/flow-toolchain.yml"
+
+jobs:
+  actorcompiler-smoke-test:
+    name: actor-compiler (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Transform hello_actor.actor.cpp -> hello_actor.cpp
+        shell: bash
+        working-directory: flow-toolchain
+        run: |
+          set -euo pipefail
+          python3 -m actorcompiler \
+            examples/hello_actor.actor.cpp \
+            "$RUNNER_TEMP/hello_actor.cpp"
+
+      - name: Verify the transform actually happened
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/hello_actor.cpp"
+          test -s "$out" || { echo "::error::output file missing or empty: $out"; exit 1; }
+          if grep -qE '^\s*ACTOR\b' "$out"; then
+            echo "::error::output still contains an unexpanded ACTOR declaration — compiler did not transform the input"
+            cat "$out"
+            exit 1
+          fi
+          echo "Transform OK - first 40 lines of generated C++:"
+          head -n 40 "$out"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: hello_actor-generated-cpp-${{ matrix.os }}
+          path: ${{ runner.temp }}/hello_actor.cpp

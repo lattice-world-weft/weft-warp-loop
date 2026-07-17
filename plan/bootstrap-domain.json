@@ -3,49 +3,19 @@
   "@type": "domain:Definition",
   "name": "weft_warp_loop_bootstrap",
   "variables": [
-    { "name": "milestone", "type": "ref", "init": { "stack": "bare_boot" } }
+    { "name": "milestone", "type": "ref", "init": { "stack": "flow_toolchain_ready" } }
   ],
   "actions": {
-    "setup_flow_toolchain": {
+    "vendor_picoquic_stack": {
       "params": [],
-      "body": [{ "pointer/set": "/milestone/stack", "value": "flow_toolchain_ready" }]
-    },
-    "vendor_picoquic_into_flow": {
-      "params": [],
-      "body": [{ "pointer/set": "/milestone/stack", "value": "picoquic_vendored" }]
-    },
-    "prove_http3_roundtrip": {
-      "params": [],
-      "body": [{ "pointer/set": "/milestone/stack", "value": "http3_roundtrip" }]
-    },
-    "add_tick_loop": {
-      "params": [],
-      "body": [{ "pointer/set": "/milestone/stack", "value": "tick_loop" }]
-    },
-    "add_input_path": {
-      "params": [],
-      "body": [{ "pointer/set": "/milestone/stack", "value": "input_path" }]
-    },
-    "add_state_sync": {
-      "params": [],
-      "body": [{ "pointer/set": "/milestone/stack", "value": "playing_loop" }]
+      "body": [{ "pointer/set": "/milestone/stack", "value": "picoquic_vendored_standalone" }]
     }
   },
   "methods": {
     "bootstrap": {
       "params": [],
       "alternatives": [
-        {
-          "name": "sequential_increments",
-          "subtasks": [
-            ["setup_flow_toolchain"],
-            ["vendor_picoquic_into_flow"],
-            ["prove_http3_roundtrip"],
-            ["add_tick_loop"],
-            ["add_input_path"],
-            ["add_state_sync"]
-          ]
-        }
+        { "name": "next", "subtasks": [["vendor_picoquic_stack"]] }
       ]
     }
   },

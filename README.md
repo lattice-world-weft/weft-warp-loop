@@ -2,7 +2,8 @@
 
 Bootstrap seed for the `lattice-world-weft` project: an original, PSO-style
 (hub → instanced field missions → combo action combat → loot contention)
-multiplayer game, with an Elixir/OTP platform layer and a Godot client/server.
+multiplayer game, with an Elixir/OTP platform layer, a Flow-based C++
+zone/world server, and a Godot client.
 
 ## Why this repo exists
 
@@ -24,34 +25,59 @@ instead of assuming the documented architecture already exists.
 1. **Plan** — a `taskweft` HTN plan artifact (`plan/bootstrap.jsonld`)
    encoding the increments below as an explicit, machine-checkable roadmap.
 2. **First working increment** — a minimal HTTP/3 round-trip: one message
-   sent from an Elixir client to a standalone Godot-side process and back.
-   No game state, no tick loop, no gameplay yet — just proof the wire works.
+   sent from an Elixir client to a standalone Flow-based C++ server process
+   and back. No game state, no tick loop, no gameplay yet — just proof the
+   wire works.
 
 ## Roadmap (each step must be proven working before the next begins)
 
-1. Bare engine boots. — **done** (upstream `fabric-godot-core`)
-2. One HTTP/3 message round-trips between an Elixir client and a standalone
-   Godot-side process.
+1. Flow's actor-compiler builds and a minimal Flow program runs standalone
+   (outside FoundationDB) as this project's server toolchain.
+2. One HTTP/3 message round-trips between an Elixir client and that
+   Flow-based C++ server process.
 3. A server-side loop ticks on an interval and holds one piece of state
    (e.g. a player's position).
-4. Client input updates that state; server pushes it back; client renders
-   it. This is the first genuine "playing loop" — one entity moving in one
-   empty room.
+4. Client (Godot) input updates that state; server pushes it back; client
+   renders it. This is the first genuine "playing loop" — one entity moving
+   in one empty room.
 5. Everything else (combat combos, loot, hub/field structure, the full
    hexagon-core architecture) is layered on **after** step 4 is real,
    one proven increment at a time.
 
 ## Process/deployment model
 
-`fabric-godot-core` runs as a **standalone OS process**, not an Elixir NIF
-(a NIF can't safely host an indefinitely-running engine loop and would crash
-the whole BEAM VM on an engine fault) and not an Erlang C-node (would
-duplicate the wire protocol — real clients already need HTTP/3, so a second
-protocol just for the Elixir↔Godot link is unnecessary structure per this
-project's own YAGNI ADR). Process lifecycle (start/stop/restart-on-crash) is
-owned by **systemd + systemd (Podman) quadlets**; Elixir's role is purely as
-an HTTP/3 network peer — it connects, detects disconnection, and reconnects
-with backoff, but does not spawn or own the Godot process.
+**Architecture pivot (2026-07-17):** the zone/world server is a **standalone
+Flow-based C++ process**, not headless Godot. This reverses the
+v-sekai-multiplayer-fabric ADR assumption that a headless `fabric-godot-core`
+instance is the zone server — that assumption is stale for this repo.
+**Godot is client-rendering only** here.
+
+Rationale: Flow (Apache-2.0, part of `apple/foundationdb`) already has
+~15 years of production-proven byte-for-byte deterministic whole-program
+replay (simulated network/clock/RNG interception, for exhaustive
+deterministic testing of distributed-system behavior). Building an
+equivalent property ourselves — e.g. a bespoke "simulated adapter" bolted
+onto Godot's loop — would mean designing and proving something new and
+unproven at that rigor. Per Gall's Law, starting from the system that
+already has this specific property working (Flow) is the more reliable
+move, even though it's a different base than Godot's engine loop.
+
+The server process runs standalone (not an Elixir NIF — can't safely host
+an indefinitely-running loop, would crash the whole BEAM VM on a fault; not
+an Erlang C-node — would duplicate the wire protocol, since real clients
+already need HTTP/3). Process lifecycle (start/stop/restart-on-crash) is
+owned by **systemd + systemd (Podman) quadlets**; Elixir's role is purely
+as an HTTP/3 network peer — it connects, detects disconnection, and
+reconnects with backoff, but does not spawn or own the server process.
+
+**Known integration cost, not yet resolved:** Flow's actor-compiler is a
+Python-based preprocessor tightly wired into FoundationDB's own CMake
+build, not a drop-in library — standing it up as this project's own build
+toolchain is itself a prerequisite step (roadmap step 1) before any
+HTTP/3 round-trip code can be written. The existing hexagon-core ADRs
+(Lean4 kernel cores + flat C host adapters, deterministic-cores-integer-
+seeded-rng) likely map onto Flow's C++ host-adapter layer directly — the
+"flat C host adapters" become Flow actors.
 
 ## Reference material (study only — not adopted as code)
 
@@ -64,25 +90,18 @@ with backoff, but does not spawn or own the Godot process.
   `scheduler` — MIT) — CCP Games' real, production EVE Online world-simulation
   engine and networking layer. Studied for real-MMO simulation/networking
   design ideas only, not adopted as code.
-- [FoundationDB `flow`](https://apple.github.io/foundationdb/flow.html)
-  (Apache-2.0) — deterministic actor-based simulation model. Not a
-  standalone reusable runtime (it's a C++ language extension baked into
-  FoundationDB's own build) and not adopted here. The idea we do reuse:
-  game logic as pure, seeded-deterministic state transitions — already
-  captured by this project's own `core-contract-pure-reducer-byte-state`
-  and `deterministic-cores-integer-seeded-rng` ADRs. That logic runs
-  *inside Godot's own main loop* (see "Engine loop" below), not a
-  separately-built engine/scheduler.
 
-## Engine loop
+## Server toolchain
 
-Godot's existing C++ main loop is reused directly (headless server build,
-fixed-timestep `_process`/`_physics_process`) — HTTP/3 networking is added
-as a module/GDExtension driven by that loop, not a separately-built minimal
-engine later grafted on. Per Gall's Law, Godot's loop is the only
-proven-working piece in this whole stack today; building and proving a
-second engine before integrating it would add a system to design and prove
-instead of evolving the one that already works.
+[FoundationDB `flow`](https://apple.github.io/foundationdb/flow.html)
+(Apache-2.0) is adopted directly as the server's base — not just a design
+reference. See "Process/deployment model" above for rationale and known
+integration cost.
+
+## Client engine loop
+
+Godot's existing C++ main loop is used for the **client only** (rendering,
+input capture, XR). It is not the zone/world server in this repo.
 
 ## License constraints
 

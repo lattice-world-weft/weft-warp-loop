@@ -6,6 +6,10 @@
     { "name": "milestone", "type": "ref", "init": { "stack": "bare_boot" } }
   ],
   "actions": {
+    "setup_flow_toolchain": {
+      "params": [],
+      "body": [{ "pointer/set": "/milestone/stack", "value": "flow_toolchain_ready" }]
+    },
     "prove_http3_roundtrip": {
       "params": [],
       "body": [{ "pointer/set": "/milestone/stack", "value": "http3_roundtrip" }]
@@ -30,6 +34,7 @@
         {
           "name": "sequential_increments",
           "subtasks": [
+            ["setup_flow_toolchain"],
             ["prove_http3_roundtrip"],
             ["add_tick_loop"],
             ["add_input_path"],

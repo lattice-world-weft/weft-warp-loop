@@ -1,22 +1,10 @@
 {
   "plan": [
-    ["setup_flow_toolchain"],
-    ["vendor_picoquic_into_flow"],
-    ["prove_http3_roundtrip"],
-    ["add_tick_loop"],
-    ["add_input_path"],
-    ["add_state_sync"]
+    ["vendor_picoquic_stack"]
   ],
   "status": "ok",
   "notes": {
-    "setup_flow_toolchain": "Flow's actor-compiler builds and runs standalone (outside FoundationDB), and the real flow C++ runtime (Boost/OpenSSL/fmt/contrib deps) links and runs one real actor. Actor-compiler sub-step done (PR #1, Python port). Flow runtime linkage sub-step in progress (Boost umbrella-package fix pushed, result pending).",
-    "vendor_picoquic_into_flow": "SUPERSEDES the earlier wire_webtransportd_bridge milestone. Decision (2026-07-17): Flow terminates QUIC/HTTP-3/WebTransport directly, using flow's own IUDPSocket as the transport and a vendored picoquic+picotls+mbedtls stack (the same one webtransportd itself uses) linked into the Flow server process. One process, not two - no local IPC bridge needed at all. Deliberate, informed tradeoff: this puts untrusted-internet-facing QUIC/TLS parsing in the same process/address-space as the trusted game simulation (accepted, after being raised explicitly - see README). Not yet started.",
-    "prove_http3_roundtrip": "One real HTTP/3 message round-trips between a browser/client and the Flow server directly (Flow terminates QUIC itself - no webtransportd sidecar in this project's runtime path). No game state, no tick loop yet.",
-    "add_tick_loop": "A server-side loop ticks on an interval and holds one piece of state (e.g. a player's position). No input path yet.",
-    "add_input_path": "Client (Godot) input reaches the tick loop and updates that state.",
-    "add_state_sync": "Server pushes updated state back to the client, which renders it. This is the first genuine playing loop: one entity moving in one empty room."
+    "vendor_picoquic_stack": "picoquic+picotls+mbedtls compile and link standalone (picoquic_vendor_test) with no flow integration"
   },
-  "generated_by": "mcp__taskweft__plan against bootstrap-domain.json in this repo",
-  "generated_on": "2026-07-17",
-  "revision_note": "Major pivot same day: after the webtransportd-bridge local-IPC design (child_socket, cross-platform parity, handshake security) got too complicated, reconsidered whether the bridge was needed at all. Decided Flow terminates QUIC/HTTP-3 directly (vendoring picoquic+picotls+mbedtls), eliminating the bridge entirely, in exchange for losing the process-isolation security boundary between untrusted QUIC/TLS parsing and the trusted game simulation - an explicit, informed tradeoff, not an oversight. webtransportd itself remains a separate, independent project (its own PR #12, child_socket adapter, stays merged/available there) but is no longer part of this project's runtime architecture."
+  "generated_by": "mcp__taskweft__plan against bootstrap-domain.json in this repo"
 }

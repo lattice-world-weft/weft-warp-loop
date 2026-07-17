@@ -132,3 +132,91 @@ target_compile_definitions(flow PUBLIC BOOST_ERROR_CODE_HEADER_ONLY BOOST_SYSTEM
 # --- minimal end-to-end smoke test: run one real actor via the real flow runtime ---
 add_executable(hello_actor_test examples/main.cpp "${HELLO_ACTOR_GEN}")
 target_link_libraries(hello_actor_test PRIVATE flow)
+
+# picoquic + picotls + mbedtls: standalone, not linked against `flow`.
+# sockloop.c/winsockloop.c are excluded on every platform (see README) -
+# picoquic never owns a real socket here.
+
+set(PICOQUIC_DEFS
+  PICOQUIC_WITH_MBEDTLS=1
+  PTLS_WITHOUT_OPENSSL=1
+  PTLS_WITHOUT_FUSION=1
+  PICOQUIC_WITHOUT_SSLKEYLOG=1
+  DISABLE_DEBUG_PRINTF=1
+)
+if(WIN32)
+  list(APPEND PICOQUIC_DEFS _WINDOWS)
+endif()
+
+set(VENDOR_QUIC_INCLUDES
+  thirdparty/picoquic/picoquic
+  thirdparty/picoquic/picohttp
+  thirdparty/picoquic/picoquic_mbedtls
+  thirdparty/picoquic/loglib
+  thirdparty/picotls/include
+  thirdparty/picotls/deps/cifra/src
+  thirdparty/picotls/deps/cifra/src/ext
+  thirdparty/picotls/deps/micro-ecc
+  thirdparty/mbedtls/include
+)
+if(WIN32)
+  list(INSERT VENDOR_QUIC_INCLUDES 0 thirdparty/picotls/picotlsvs/picotls)
+endif()
+
+file(GLOB PICOQUIC_CORE_SRCS "thirdparty/picoquic/picoquic/*.c")
+# Exclude on every platform, not just Windows: we never let picoquic drive
+# its own sockets (see comment above).
+list(REMOVE_ITEM PICOQUIC_CORE_SRCS
+  "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/picoquic/picoquic/sockloop.c"
+  "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/picoquic/picoquic/winsockloop.c")
+
+file(GLOB PICOHTTP_SRCS "thirdparty/picoquic/picohttp/*.c")
+
+file(GLOB PICOTLS_SRCS "thirdparty/picotls/lib/*.c")
+foreach(_ex certificate_compression.c fusion.c mbedtls.c mbedtls_sign.c openssl.c)
+  list(REMOVE_ITEM PICOTLS_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/picotls/lib/${_ex}")
+endforeach()
+
+file(GLOB PICOTLS_CIFRA_SRCS "thirdparty/picotls/lib/cifra/*.c")
+list(REMOVE_ITEM PICOTLS_CIFRA_SRCS
+  "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/picotls/lib/cifra/libaegis.c")
+
+file(GLOB CIFRA_SRCS "thirdparty/picotls/deps/cifra/src/*.c")
+file(GLOB CIFRA_TEST_SRCS "thirdparty/picotls/deps/cifra/src/test*.c")
+list(REMOVE_ITEM CIFRA_SRCS ${CIFRA_TEST_SRCS})
+foreach(_ex donna naclref tweetnacl)
+  list(REMOVE_ITEM CIFRA_SRCS
+    "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/picotls/deps/cifra/src/curve25519.${_ex}.c")
+endforeach()
+
+file(GLOB MICROECC_SRCS "thirdparty/picotls/deps/micro-ecc/*.c")
+file(GLOB PICOQUIC_MBEDTLS_SRCS "thirdparty/picoquic/picoquic_mbedtls/*.c")
+
+file(GLOB MBEDTLS_SRCS "thirdparty/mbedtls/library/*.c")
+list(REMOVE_ITEM MBEDTLS_SRCS
+  "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/mbedtls/library/godot_core_mbedtls_platform.c")
+
+file(GLOB LOGLIB_SRCS "thirdparty/picoquic/loglib/*.c")
+
+add_library(picoquic_vendored STATIC
+  ${PICOQUIC_CORE_SRCS} ${PICOHTTP_SRCS}
+  ${PICOTLS_SRCS} ${PICOTLS_CIFRA_SRCS} ${CIFRA_SRCS} ${MICROECC_SRCS}
+  ${PICOQUIC_MBEDTLS_SRCS} ${MBEDTLS_SRCS} ${LOGLIB_SRCS})
+target_compile_options(picoquic_vendored PRIVATE -w)
+if(WIN32)
+  target_compile_options(picoquic_vendored PRIVATE
+    -Wno-error=incompatible-pointer-types
+    -Wno-error=implicit-function-declaration
+    -Wno-error=int-conversion)
+endif()
+target_compile_definitions(picoquic_vendored PRIVATE ${PICOQUIC_DEFS})
+target_include_directories(picoquic_vendored SYSTEM PRIVATE ${VENDOR_QUIC_INCLUDES})
+target_link_libraries(picoquic_vendored PUBLIC Threads::Threads)
+if(WIN32)
+  target_link_libraries(picoquic_vendored PUBLIC ws2_32 iphlpapi bcrypt)
+endif()
+
+add_executable(picoquic_vendor_test examples/picoquic_vendor_test.c)
+target_compile_definitions(picoquic_vendor_test PRIVATE ${PICOQUIC_DEFS})
+target_include_directories(picoquic_vendor_test SYSTEM PRIVATE ${VENDOR_QUIC_INCLUDES})
+target_link_libraries(picoquic_vendor_test PRIVATE picoquic_vendored)

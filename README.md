@@ -65,8 +65,24 @@ with backoff, but does not spawn or own the Godot process.
   engine and networking layer. Studied for real-MMO simulation/networking
   design ideas only, not adopted as code.
 - [FoundationDB `flow`](https://apple.github.io/foundationdb/flow.html)
-  (Apache-2.0) — deterministic actor-based simulation model, relevant to
-  this project's own deterministic-core design goals.
+  (Apache-2.0) — deterministic actor-based simulation model. Not a
+  standalone reusable runtime (it's a C++ language extension baked into
+  FoundationDB's own build) and not adopted here. The idea we do reuse:
+  game logic as pure, seeded-deterministic state transitions — already
+  captured by this project's own `core-contract-pure-reducer-byte-state`
+  and `deterministic-cores-integer-seeded-rng` ADRs. That logic runs
+  *inside Godot's own main loop* (see "Engine loop" below), not a
+  separately-built engine/scheduler.
+
+## Engine loop
+
+Godot's existing C++ main loop is reused directly (headless server build,
+fixed-timestep `_process`/`_physics_process`) — HTTP/3 networking is added
+as a module/GDExtension driven by that loop, not a separately-built minimal
+engine later grafted on. Per Gall's Law, Godot's loop is the only
+proven-working piece in this whole stack today; building and proving a
+second engine before integrating it would add a system to design and prove
+instead of evolving the one that already works.
 
 ## License constraints
 

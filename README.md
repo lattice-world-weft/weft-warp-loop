@@ -98,6 +98,40 @@ seeded-rng) likely map onto Flow's C++ host-adapter layer directly — the
 reference. See "Process/deployment model" above for rationale and known
 integration cost.
 
+`setup_flow_toolchain` (roadmap step 0) is split into two proven
+sub-increments, in order:
+
+1. **The actor-compiler builds and runs standalone, cross-platform.**
+   `flow-toolchain/actorcompiler/` vendors the **official upstream Python
+   actor-compiler** (`flow/actorcompiler_py/` — see `flow-toolchain/NOTICE.md`
+   for exact commit and license provenance), not the legacy C#/.NET one.
+   Per `cmake/CompileActorCompiler.cmake`, the Python implementation is
+   FoundationDB's own **current default** (`ACTORCOMPILER_COMMAND = python
+   -m flow.actorcompiler_py`); C#/.NET is only a fallback path
+   (`FDB_USE_CSHARP_TOOLS`). We deliberately chose the Python version:
+   zero external dependencies (stdlib only), and this project already
+   needs Python3 for the next increment's `ProtocolVersion.h` codegen
+   (Jinja2-templated) — one toolchain instead of two. (An earlier revision
+   of this PR vendored the C# implementation with a `dotnet`-based
+   self-contained-publish build; that was reverted once the Python default
+   was discovered — see git history on this branch.) CI
+   (`.github/workflows/flow-toolchain.yml`, matrix: `ubuntu-latest` +
+   `windows-latest` + `macos-latest`) runs it against
+   `flow-toolchain/examples/hello_actor.actor.cpp`, asserting the output
+   is transformed plain C++ (no leftover `ACTOR` declaration). **Status:
+   in progress, this PR.**
+2. **A minimal flow C++ runtime links and actually runs one actor.**
+   In progress. `flow/`'s upstream `CMakeLists.txt` compiles the *entire*
+   `flow/` directory as a single library (no networking/non-networking
+   split), depending on sibling monorepo directories
+   (`contrib/{crc32,stacktrace,folly_memcpy,SimpleOpt,libb64}`), Boost,
+   OpenSSL, and Python3+Jinja2 for `ProtocolVersion.h` codegen. Per Gall's
+   Law, this is being vendored as the whole faithful configuration rather
+   than a hand-picked subset, since there's no officially-sanctioned
+   minimal build to evolve from — a hand-picked subset would itself be an
+   unproven new system. This is a substantial, multi-commit extraction,
+   not a quick follow-up.
+
 ## Client engine loop
 
 Godot's existing C++ main loop is used for the **client only** (rendering,

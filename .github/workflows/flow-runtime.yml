@@ -49,7 +49,7 @@ jobs:
           -DCMAKE_BUILD_TYPE=Release
           -DCMAKE_TOOLCHAIN_FILE=${{ runner.temp }}/vcpkg/scripts/buildsystems/vcpkg.cmake
 
-      - name: Build
+      - name: Build hello_actor_test
         run: cmake --build build --config Release --target hello_actor_test -j 2
 
       - name: Run the real actor end-to-end
@@ -59,4 +59,16 @@ jobs:
           exe="build/hello_actor_test"
           [ -f "$exe" ] || exe="build/Release/hello_actor_test.exe"
           [ -f "$exe" ] || exe="build/hello_actor_test.exe"
+          "$exe"
+
+      - name: Build picoquic_vendor_test (vendored picoquic+picotls+mbedtls, standalone)
+        run: cmake --build build --config Release --target picoquic_vendor_test -j 2
+
+      - name: Run picoquic_vendor_test
+        shell: bash
+        run: |
+          set -euo pipefail
+          exe="build/picoquic_vendor_test"
+          [ -f "$exe" ] || exe="build/Release/picoquic_vendor_test.exe"
+          [ -f "$exe" ] || exe="build/picoquic_vendor_test.exe"
           "$exe"

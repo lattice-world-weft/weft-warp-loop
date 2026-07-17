@@ -1,0 +1,9 @@
+{
+  "name": "weft-warp-loop-flow-runtime",
+  "version": "0.1.0",
+  "dependencies": [
+    "boost",
+    "openssl",
+    "fmt"
+  ]
+}

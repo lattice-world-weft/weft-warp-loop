@@ -6,9 +6,10 @@
 // (https://apple.github.io/foundationdb/flow.html#actor-compiler) — this
 // file is original, not copied from any FoundationDB source.
 //
-// This only needs to survive the *transform* step (.actor.cpp -> .cpp);
-// it is not compiled/linked against a flow C++ runtime yet. That is a
-// later, separate increment.
+// Compiled and linked against the real, vendored flow C++ runtime (see
+// examples/main.cpp) as the roadmap step 0 end-to-end smoke test.
+
+#include "flow/flow.h"
 
 ACTOR Future<int> asyncAdd(Future<int> f, int offset) {
 	int value = wait(f);

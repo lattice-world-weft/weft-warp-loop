@@ -132,6 +132,54 @@ sub-increments, in order:
    unproven new system. This is a substantial, multi-commit extraction,
    not a quick follow-up.
 
+## WebTransport/HTTP-3: Flow terminates QUIC directly
+
+**Superseded design, kept here for the record:** an earlier version of
+this plan had a separate sidecar process,
+[`webtransportd`](https://github.com/fire/webtransportd) (BSD-2-Clause),
+terminate QUIC/HTTP-3 and bridge framed bytes to the Flow server over a
+local IPC channel (first stdio, then an attempted duplex-socket
+redesign for cross-platform parity). That local-IPC design grew real
+complexity (a security handshake to authenticate the child's connection,
+a from-scratch Windows Winsock implementation) trying to solve a problem
+— cross-platform parity for a bridge — that turned out not to be worth
+solving, once we asked whether the bridge needed to exist at all.
+
+**Current decision (2026-07-17): Flow terminates QUIC/HTTP-3/WebTransport
+itself, in one process.** Flow's own `IUDPSocket` becomes the transport;
+`picoquic` + `picotls` + `mbedtls` (the same real, proven QUIC/TLS stack
+`webtransportd` itself uses — not a from-scratch protocol
+implementation) get vendored directly into this project alongside the
+rest of the flow runtime. This eliminates the local-IPC bridge problem
+entirely — no pipes, no sockets, no handshake, no second process to
+supervise.
+
+**The tradeoff, explicit, not an oversight:** `picoquic`/`picotls`/
+`mbedtls` parse genuinely untrusted, attacker-controlled input — real
+QUIC packets and TLS handshakes from arbitrary internet clients. Running
+that in the *same process* as the trusted game simulation (rather than
+an isolated sidecar) means a memory-corruption bug in QUIC/TLS parsing
+now directly threatens live game state and crashes the whole server
+instead of an independently-restarted sidecar. This is the same
+tradeoff considered (and rejected) earlier for an in-process/`dlopen`
+approach to `webtransportd` — accepted here deliberately, in exchange
+for a real, significant reduction in moving parts, after the
+alternative (a clean two-process bridge) proved to cost more complexity
+than expected to get right across all three platforms.
+
+`webtransportd` remains a real, independent, useful project on its own
+— its `child_socket` adapter (POSIX duplex-socket alternative to its
+stdio pipes) is still merged there
+([fire/webtransportd#12](https://github.com/fire/webtransportd/pull/12))
+— it's just no longer part of *this* project's runtime architecture.
+
+**Status: decided, not yet implemented.** `flow-toolchain/webtransportd_frame/`
+(the vendored frame codec for the old bridge design) has been removed —
+it's not needed when Flow terminates QUIC itself. Vendoring
+`picoquic`/`picotls`/`mbedtls` into `flow-toolchain/` and wiring them
+against flow's `IUDPSocket` is the next milestone
+(`vendor_picoquic_into_flow` in the plan), before `prove_http3_roundtrip`.
+
 ## Client engine loop
 
 Godot's existing C++ main loop is used for the **client only** (rendering,

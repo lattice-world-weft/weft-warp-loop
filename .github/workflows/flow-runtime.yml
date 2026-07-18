@@ -12,8 +12,8 @@ on:
       - ".github/workflows/flow-runtime.yml"
 
 jobs:
-  hello-actor-end-to-end:
-    name: hello_actor_test (${{ matrix.os }})
+  picoquic-vendor-test:
+    name: picoquic_vendor_test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -43,23 +43,42 @@ jobs:
           vcpkgDirectory: "${{ runner.temp }}/vcpkg"
           vcpkgGitCommitId: "908da3a305a0a8028d9602ab241b433652b3df69"
 
+      - name: Set up Lean toolchain (fanout-core, linked into picoquic_fanout_server)
+        uses: leanprover/lean-action@v1
+        with:
+          lake-package-directory: flow-toolchain/fanout-core
+          build-args: "Fanoutcore"
+          test: false
+          lint: false
+
+      - name: Set up MSVC dev environment (Windows - Ninja + clang-cl)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
       - name: Configure
-        run: >
-          cmake -S flow-toolchain -B build
-          -DCMAKE_BUILD_TYPE=Release
-          -DCMAKE_TOOLCHAIN_FILE=${{ runner.temp }}/vcpkg/scripts/buildsystems/vcpkg.cmake
-
-      - name: Build hello_actor_test
-        run: cmake --build build --config Release --target hello_actor_test -j 2
-
-      - name: Run the real actor end-to-end
         shell: bash
         run: |
           set -euo pipefail
-          exe="build/hello_actor_test"
-          [ -f "$exe" ] || exe="build/Release/hello_actor_test.exe"
-          [ -f "$exe" ] || exe="build/hello_actor_test.exe"
-          "$exe"
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            # flow (FoundationDB's runtime) uses GNU __attribute__ syntax
+            # throughout and has never compiled under plain MSVC cl.exe -
+            # upstream FDB builds Windows with clang. Use the runner's
+            # preinstalled LLVM clang-cl via Ninja.
+            # lean-action puts a Unix-style elan path (/c/Users/...) on the
+            # runner PATH; bash resolves it but find_program() inside CMake (a
+            # Windows process) cannot, so hand CMake the executables directly.
+            cmake -S flow-toolchain -B build -G Ninja \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_C_COMPILER=clang-cl \
+              -DCMAKE_CXX_COMPILER=clang-cl \
+              -DLAKE_EXECUTABLE="$(cygpath -m "$HOME/.elan/bin/lake.exe")" \
+              -DLEAN_EXECUTABLE="$(cygpath -m "$HOME/.elan/bin/lean.exe")" \
+              -DCMAKE_TOOLCHAIN_FILE='${{ runner.temp }}/vcpkg/scripts/buildsystems/vcpkg.cmake'
+          else
+            cmake -S flow-toolchain -B build \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_TOOLCHAIN_FILE='${{ runner.temp }}/vcpkg/scripts/buildsystems/vcpkg.cmake'
+          fi
 
       - name: Build picoquic_vendor_test (vendored picoquic+picotls+mbedtls, standalone)
         run: cmake --build build --config Release --target picoquic_vendor_test -j 2
@@ -72,3 +91,51 @@ jobs:
           [ -f "$exe" ] || exe="build/Release/picoquic_vendor_test.exe"
           [ -f "$exe" ] || exe="build/picoquic_vendor_test.exe"
           "$exe"
+
+      - name: Build picoquic_fanout_server (the Flow-driven bridge, fanout-core linked in)
+        run: cmake --build build --config Release --target picoquic_fanout_server -j 2
+
+      - name: Set up pixi (aioquic end-to-end test)
+        uses: prefix-dev/setup-pixi@v0.10.0
+        with:
+          pixi-version: v0.72.2
+          manifest-path: flow-toolchain/examples/pixi.toml
+
+      - name: Run picoquic_fanout_server and the aioquic end-to-end fanout test
+        shell: bash
+        working-directory: flow-toolchain
+        run: |
+          set -euo pipefail
+          exe="../build/picoquic_fanout_server"
+          [ -f "$exe" ] || exe="../build/Release/picoquic_fanout_server.exe"
+          [ -f "$exe" ] || exe="../build/picoquic_fanout_server.exe"
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            # The server links Lean's shared runtime (libleanshared.dll etc.);
+            # elan's active toolchain bin dir has them. Resolve the prefix from
+            # inside fanout-core: lean-action configures no elan default
+            # toolchain, so elan's proxies only work where a lean-toolchain
+            # file pins one.
+            lean_prefix="$(cd fanout-core && lean --print-prefix)"
+            export PATH="$(cygpath -u "$lean_prefix")/bin:$PATH"
+          fi
+          # secp256r1 (ECDSA): the vendored TLS stack has no OpenSSL backend, and
+          # its minicrypto/mbedtls signers can't produce the RSA-PSS
+          # CertificateVerify TLS 1.3 requires - RSA certs fail the handshake
+          # with alert 51 (decrypt_error).
+          "$exe" 4433 thirdparty/picoquic/certs/secp256r1/cert.pem thirdparty/picoquic/certs/secp256r1/key.pem &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+          sleep 1
+          cd examples
+          pixi run python test_picoquic_fanout.py --port 4433
+
+      - name: Dump server trace logs on failure
+        if: failure()
+        shell: bash
+        working-directory: flow-toolchain
+        run: |
+          for f in fanout_server.*.xml; do
+            [ -f "$f" ] || continue
+            echo "===== $f ====="
+            cat "$f"
+          done

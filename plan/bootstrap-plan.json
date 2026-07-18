@@ -1,10 +1,10 @@
 {
   "plan": [
-    ["vendor_picoquic_stack"]
+    ["bridge_fanout_via_lean_core"]
   ],
   "status": "ok",
   "notes": {
-    "vendor_picoquic_stack": "picoquic+picotls+mbedtls compile and link standalone (picoquic_vendor_test) with no flow integration"
+    "bridge_fanout_via_lean_core": "picoquic_fanout_server: a Flow actor relaying SUB/PUB topic fanout, dispatch logic in the fanout-core Lean4 kernel"
   },
   "generated_by": "mcp__taskweft__plan against bootstrap-domain.json in this repo"
 }

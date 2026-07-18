@@ -1,0 +1,85 @@
+name: fanout-core
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "flow-toolchain/fanout-core/**"
+      - ".github/workflows/fanout-core.yml"
+  pull_request:
+    paths:
+      - "flow-toolchain/fanout-core/**"
+      - ".github/workflows/fanout-core.yml"
+
+jobs:
+  ffi-test:
+    name: test_ffi (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    defaults:
+      run:
+        working-directory: flow-toolchain/fanout-core
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Lean toolchain
+        uses: leanprover/lean-action@v1
+        with:
+          lake-package-directory: flow-toolchain/fanout-core
+          build-args: "Fanoutcore"
+          test: false
+          lint: false
+
+      - name: Locate the Lean toolchain's bundled clang + runtime libs
+        shell: bash
+        run: |
+          set -euo pipefail
+          prefix="$(lean --print-prefix)"
+          echo "LEAN_PREFIX=$prefix" >> "$GITHUB_ENV"
+
+      - name: Compile + link test_ffi
+        shell: bash
+        run: |
+          set -euo pipefail
+          exe="test_ffi"
+          SYSROOT_FLAGS=()
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            CLANG="$LEAN_PREFIX/bin/clang.exe"
+            LIBS=("$LEAN_PREFIX/lib/lean/libleanshared.dll.a" "$LEAN_PREFIX/lib/lean/libInit_shared.dll.a")
+            exe="test_ffi.exe"
+          elif [[ "${{ runner.os }}" == "macOS" ]]; then
+            CLANG="$LEAN_PREFIX/bin/clang"
+            LIBS=(-L"$LEAN_PREFIX/lib/lean" -lleanshared -lInit_shared)
+            # Lean's bundled clang has no Apple SDK of its own; point it at
+            # Xcode's, or system headers like stdio.h don't resolve.
+            SYSROOT_FLAGS=(-isysroot "$(xcrun --show-sdk-path)")
+          else
+            CLANG="$LEAN_PREFIX/bin/clang"
+            LIBS=(-L"$LEAN_PREFIX/lib/lean" -lleanshared -lInit_shared)
+          fi
+          "$CLANG" -std=c11 \
+            "${SYSROOT_FLAGS[@]}" \
+            -I"$LEAN_PREFIX/include" -I"$LEAN_PREFIX/include/clang" \
+            test_ffi.c \
+            .lake/build/ir/Fanoutcore.c \
+            .lake/build/ir/Fanoutcore/SlotMap.c \
+            .lake/build/ir/Fanoutcore/FanoutCore.c \
+            .lake/build/ir/Fanoutcore/Ffi.c \
+            "${LIBS[@]}" \
+            -o "$exe"
+          echo "EXE=$exe" >> "$GITHUB_ENV"
+
+      - name: "Run test_ffi (fanout-core correctness: dispatch + generational safety)"
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            cp "$LEAN_PREFIX"/bin/*.dll .
+          else
+            export LD_LIBRARY_PATH="$LEAN_PREFIX/lib/lean:${LD_LIBRARY_PATH:-}"
+            export DYLD_LIBRARY_PATH="$LEAN_PREFIX/lib/lean:${DYLD_LIBRARY_PATH:-}"
+          fi
+          ./"$EXE"

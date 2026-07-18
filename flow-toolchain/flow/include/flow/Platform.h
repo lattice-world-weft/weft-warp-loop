@@ -727,7 +727,10 @@ inline static void flushOutputStreams() {
 #define DEFAULT_CONSTRUCTORS(X)
 #endif
 
-#if defined(_WIN32)
+// Pre-UCRT MSVC (<1900/VS2015) lacked strtoull; UCRT provides the real thing,
+// and redefining it unconditionally corrupts any later `std::strtoull` call
+// (e.g. inside Boost.Asio) into the nonexistent `std::_strtoui64`.
+#if defined(_MSC_VER) && _MSC_VER < 1900
 #define strtoull(nptr, endptr, base) _strtoui64(nptr, endptr, base)
 #endif
 

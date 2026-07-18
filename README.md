@@ -50,8 +50,20 @@ proven working before the next begins.
   socket I/O and clock reads route through Flow's own `IUDPSocket`/`now()`,
   so picoquic is exactly as simulatable as any of Flow's own networking
   code — Flow's simulator needs no picoquic-specific handling, because it
-  only ever sees Flow's own primitives being called. The actor that
-  drives picoquic this way does not exist yet.
+  only ever sees Flow's own primitives being called. `picoquic_fanout_server`
+  (`flow-toolchain/examples/picoquic_fanout_server.actor.cpp`) is that
+  actor: a topic pub/sub relay whose subscriber-dispatch logic is the
+  fanout-core Lean4 kernel below, not C++.
+- Game logic — starting with the topic pub/sub fanout the bridge relays —
+  is authored in Lean4 (`flow-toolchain/fanout-core/`), compiled to a
+  linkable static library via Lean4's `@[export]` FFI, matching this
+  project's `lean-*` hexagon-core convention
+  ([v-sekai-multiplayer-fabric](https://github.com/v-sekai-multiplayer-fabric)).
+  The C++ actor is a thin host adapter: it owns all I/O (QUIC context, UDP
+  socket, wait/timer loop) and calls synchronously into the Lean4 core for
+  every fanout decision. The core's slot map (generational index: a fixed
+  array + freelist + per-slot generation counter) rejects a stale/recycled
+  id instead of aliasing a later allocation into the same array slot.
 
 ## Server toolchain
 
@@ -71,11 +83,10 @@ there is no officially-sanctioned minimal subset to vendor instead —
 hand-picking one would itself be an unproven new configuration.
 `flow-toolchain/CMakeLists.txt` (original, not copied from upstream's
 monorepo-wide root) wires Boost 1.86/fmt 11.1.4/OpenSSL (`vcpkg.json`),
-Python3+Jinja2 codegen, and `hello_actor_test`, which runs one real actor
-(`asyncAdd`) through the real flow runtime with `g_network` initialized
-but its event loop never run — the input `Future` is fulfilled before the
-actor observes it, so it completes via the actor-compiler's synchronous
-already-ready path.
+Python3+Jinja2 codegen, and the Lean4 toolchain (`lake build Fanoutcore`,
+then Lean's own bundled `clang`/`llvm-ar` compile and archive the
+generated C — the project's own C++ compiler stays out of it, since the
+generated C relies on attributes only Lean's toolchain guarantees).
 
 `flow-toolchain/thirdparty/{picoquic,picotls,mbedtls}` vendors the same
 QUIC/TLS stack `webtransportd` uses, from `webtransportd`'s own
@@ -83,6 +94,12 @@ already-proven vendoring/build recipe. `picoquic_vendor_test`
 (`flow-toolchain/examples/picoquic_vendor_test.c`) creates and frees a
 client-only `picoquic_quic_t` — no networking, proving only that the
 vendored stack compiles, links, and its core create/free API works.
+`picoquic_fanout_server` is the real server: a QUIC context driven by
+Flow's socket/timer primitives, relaying `SUB <topic>` / `PUB <topic>`
+lines between connections. `examples/test_picoquic_fanout.py` (aioquic,
+run via `pixi run` in `flow-toolchain/examples/`) proves it end-to-end —
+two real QUIC connections, one publish fanned out byte-for-byte to the
+other's stream.
 
 ## Reference material (study only — not adopted as code)
 

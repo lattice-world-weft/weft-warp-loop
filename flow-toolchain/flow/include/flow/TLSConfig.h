@@ -113,9 +113,7 @@ public:
 
 	void print(FILE* fp);
 
-#ifndef PRIVATE_EXCEPT_FOR_TLSCONFIG_CPP
 private:
-#endif
 
 	std::string tlsCertBytes, tlsKeyBytes, tlsCABytes;
 	std::string tlsPassword;
@@ -208,9 +206,7 @@ public:
 
 	bool isInsecure() const { return tlsCertPath.empty() && tlsCertBytes.empty(); }
 
-#ifndef PRIVATE_EXCEPT_FOR_TLSCONFIG_CPP
 private:
-#endif
 	static Future<LoadedTLSConfig> loadAsync(const TLSConfig* self); // FIXME
 	template <typename T>
 	friend class LoadAsyncActorState;

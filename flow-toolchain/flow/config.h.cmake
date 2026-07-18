@@ -10,7 +10,7 @@
 #ifdef WIN32
 # define _WIN32_WINNT ${WINDOWS_TARGET}
 # define WINVER ${WINDOWS_TARGET}
-# define NTDDI_VERSION 0x05020000
+# define NTDDI_VERSION 0x06000000
 # define BOOST_ALL_NO_LIB
 #else
 # cmakedefine USE_ASAN

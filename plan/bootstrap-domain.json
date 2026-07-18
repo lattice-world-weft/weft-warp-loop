@@ -9,13 +9,17 @@
     "vendor_picoquic_stack": {
       "params": [],
       "body": [{ "pointer/set": "/milestone/stack", "value": "picoquic_vendored_standalone" }]
+    },
+    "bridge_fanout_via_lean_core": {
+      "params": [],
+      "body": [{ "pointer/set": "/milestone/stack", "value": "picoquic_fanout_server_bridged" }]
     }
   },
   "methods": {
     "bootstrap": {
       "params": [],
       "alternatives": [
-        { "name": "next", "subtasks": [["vendor_picoquic_stack"]] }
+        { "name": "next", "subtasks": [["bridge_fanout_via_lean_core"]] }
       ]
     }
   },

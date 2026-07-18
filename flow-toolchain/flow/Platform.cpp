@@ -1582,7 +1582,9 @@ SystemStatistics getSystemStatistics(std::string const& dataFolder,
 		initPdhStrings(*statState, dataFolder);
 
 		TraceEvent("SetupQuery").log();
-		handlePdhStatus(PdhOpenQuery(nullptr, nullptr, &(*statState)->Query), "PdhOpenQuery");
+		// dwUserData is a DWORD_PTR (integer), not a pointer; clang-cl rejects
+		// nullptr here where MSVC would silently convert it.
+		handlePdhStatus(PdhOpenQuery(nullptr, 0, &(*statState)->Query), "PdhOpenQuery");
 
 		if (!(*statState)->pdhStrings.diskDevice.empty()) {
 			handlePdhStatus(
@@ -3511,16 +3513,18 @@ std::string get_backtrace() {
 
 namespace platform {
 std::string format_backtrace(void** addresses, int numAddresses) {
-	ImageInfo const& imageInfo = getCachedImageInfo();
-
 	std::string s;
 #if defined(_WIN32)
+	// getCachedImageInfo() is only defined on __unixish__ platforms, and the
+	// Windows branch below never reads imageInfo, so don't fetch it here.
 	char buf[32];
 	for (int i = 1; i < numAddresses; i++) {
 		_snprintf(buf, sizeof(buf), "%p ", addresses[i]);
 		s += buf;
 	}
 #else
+	ImageInfo const& imageInfo = getCachedImageInfo();
+
 #ifdef __APPLE__
 	s = format("atos -o %s -arch x86_64 -l %p", imageInfo.symbolFileName.c_str(), imageInfo.offset);
 	for (int i = 1; i < numAddresses; i++) {

@@ -1,0 +1,6 @@
+name = "fanoutcore"
+version = "0.1.0"
+defaultTargets = ["Fanoutcore"]
+
+[[lean_lib]]
+name = "Fanoutcore"

@@ -1,0 +1,4 @@
+.lake/
+test_ffi
+test_ffi.exe
+*.dll

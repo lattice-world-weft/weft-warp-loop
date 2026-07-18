@@ -4,3 +4,4 @@ flow-toolchain/vcpkg_installed/
 __pycache__/
 # picoquic_fanout_server writes flow trace logs into its cwd
 fanout_server.*.xml
+/flow-toolchain/sketch-core/.lake/

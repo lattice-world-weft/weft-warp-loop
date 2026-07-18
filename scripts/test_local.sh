@@ -92,4 +92,10 @@ sleep 2
 kill -0 "$server_pid" 2>/dev/null || { echo "server failed to start"; exit 1; }
 cd examples
 pixi run python test_picoquic_fanout.py --port 4433
+
+echo "=== sketch-core property tests ==="
+(cd ../sketch-core && lake exe test_props)
+
+echo "=== end-to-end sketch convergence test ==="
+pixi run python test_sketch_convergence.py --port 4433
 echo "=== ALL LOCAL TESTS PASSED ==="

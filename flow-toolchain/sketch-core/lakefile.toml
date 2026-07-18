@@ -1,0 +1,25 @@
+name = "sketchcore"
+version = "0.1.0"
+defaultTargets = ["SketchCore"]
+
+[[lean_lib]]
+name = "SketchCore"
+
+# Property tests + tooling only - the C static library linked into the C++
+# host is built from the SketchCore target alone, so plausible never enters
+# the shipped artifact (same policy as fanout-core).
+[[require]]
+name = "plausible"
+git = "https://github.com/leanprover-community/plausible"
+rev = "v4.30.0"
+
+[[lean_exe]]
+name = "test_props"
+root = "TestProps"
+
+# Consumes a file of length-prefixed CSP1 packets, replays them through the
+# core, prints the canonical sketch-graph JSON. The convergence test diffs
+# this output across clients.
+[[lean_exe]]
+name = "sketch_graph_dump"
+root = "GraphDump"

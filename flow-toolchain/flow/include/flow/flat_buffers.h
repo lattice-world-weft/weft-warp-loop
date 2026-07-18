@@ -28,6 +28,7 @@
 #include <map>
 #include <memory>
 #include <set>
+#include <stdexcept>
 #include <stdint.h>
 #include <string>
 #include <tuple>

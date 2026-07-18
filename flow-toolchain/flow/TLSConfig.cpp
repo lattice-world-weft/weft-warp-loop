@@ -18,9 +18,14 @@
  * limitations under the License.
  */
 
-#define PRIVATE_EXCEPT_FOR_TLSCONFIG_CPP
+// Note: upstream FDB wrapped this include in a PRIVATE_EXCEPT_FOR_TLSCONFIG_CPP
+// hack that flipped `private:` off for this TU only. That's harmless on the
+// Itanium ABI (access doesn't affect mangling) but breaks the MSVC ABI, where
+// a public-defined symbol has a different mangled name than the private
+// reference every other TU emits. TLSConfig member definitions don't need the
+// hack: out-of-class definition of a private static member is always legal,
+// and LoadedTLSConfig already friends TLSConfig.
 #include "flow/TLSConfig.h"
-#undef PRIVATE_EXCEPT_FOR_TLSCONFIG_CPP
 
 // To force typeinfo to only be emitted once.
 TLSPolicy::~TLSPolicy() {}

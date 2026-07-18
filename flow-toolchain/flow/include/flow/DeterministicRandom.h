@@ -34,9 +34,13 @@
 #include <random>
 
 // FIXME: Remove once https://github.com/apple/swift/issues/61620 is fixed.
+#ifdef WITH_SWIFT
 #define SWIFT_CXX_REF_DETERMINISTICRANDOM                                                                              \
 	__attribute__((swift_attr("import_reference"))) __attribute__((swift_attr("retain:addref_DeterministicRandom")))   \
 	__attribute__((swift_attr("release:delref_DeterministicRandom")))
+#else
+#define SWIFT_CXX_REF_DETERMINISTICRANDOM
+#endif
 
 class SWIFT_CXX_REF_DETERMINISTICRANDOM DeterministicRandom final : public IRandom,
                                                                     public ReferenceCounted<DeterministicRandom> {

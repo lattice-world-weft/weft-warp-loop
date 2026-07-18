@@ -42,13 +42,13 @@ public:
 
 	void wake();
 
-	boost::asio::io_service ios;
-	boost::asio::io_service::work
+	boost::asio::io_context ios;
+	boost::asio::executor_work_guard<boost::asio::io_context::executor_type>
 	    do_not_stop; // Reactor needs to keep running when there is nothing to do until stopped explicitly
 
 private:
 	Net2* network;
-	boost::asio::deadline_timer firstTimer;
+	boost::asio::steady_timer firstTimer;
 
 	static void nullWaitHandler(const boost::system::error_code&) {}
 	static void nullCompletionHandler() {}
@@ -77,7 +77,7 @@ private:
 		int getFD() override { return fd; }
 		Future<int64_t> read() override {
 			Promise<int64_t> p;
-			sd.async_read_some(boost::asio::mutable_buffers_1(&fdVal, sizeof(fdVal)),
+			sd.async_read_some(boost::asio::mutable_buffer(&fdVal, sizeof(fdVal)),
 			                   boost::bind(&EventFD::handle_read,
 			                               p,
 			                               &fdVal,

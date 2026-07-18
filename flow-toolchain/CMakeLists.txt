@@ -42,6 +42,15 @@ file(MAKE_DIRECTORY "${CODEGEN_INCLUDE_DIR}/flow")
 
 include(flow/ApiVersions.cmake)
 set(CURRENT_GIT_VERSION "weft-warp-loop-extraction")
+# config.h.cmake defines _WIN32_WINNT/WINVER from this; an unset value leaves
+# both macros defined-but-empty, which breaks every "#if _WIN32_WINNT >= ..."
+# check in the Windows SDK headers. 0x0600 = Vista, matching upstream FDB.
+set(WINDOWS_TARGET 0x0600)
+# The same values as command-line defines - see the target_compile_definitions
+# comment below for why config.h alone is not enough on Windows.
+set(WINDOWS_TARGET_DEFS _WIN32_WINNT=${WINDOWS_TARGET} WINVER=${WINDOWS_TARGET} NTDDI_VERSION=0x06000000)
+include(CheckSymbolExists)
+check_symbol_exists(aligned_alloc "stdlib.h" HAS_ALIGNED_ALLOC)
 configure_file(flow/ApiVersion.h.cmake "${CODEGEN_INCLUDE_DIR}/flow/ApiVersion.h")
 configure_file(flow/SourceVersion.h.cmake "${CODEGEN_INCLUDE_DIR}/flow/SourceVersion.h")
 configure_file(flow/config.h.cmake "${CODEGEN_INCLUDE_DIR}/flow/config.h")
@@ -84,7 +93,29 @@ endfunction()
 
 compile_actor_file("${CMAKE_CURRENT_SOURCE_DIR}/flow/ActorCollection.actor.cpp" ACTOR_COLLECTION_GEN)
 compile_actor_file("${CMAKE_CURRENT_SOURCE_DIR}/flow/genericactors.actor.cpp" GENERIC_ACTORS_GEN)
-compile_actor_file("${CMAKE_CURRENT_SOURCE_DIR}/examples/hello_actor.actor.cpp" HELLO_ACTOR_GEN)
+
+# genericactors.actor.h (a header, not a .cpp) has its own raw ACTOR/state/choose
+# syntax; anything compiled with POST_ACTOR_COMPILER set (i.e. every actor-
+# generated .g.cpp above) needs the transformed flow/genericactors.actor.g.h
+# this header's own #include falls back to, or the untransformed syntax fails
+# to parse - actorcompiler.h's IDE-only fallback macros are deliberately
+# suppressed whenever POST_ACTOR_COMPILER is set.
+set(GENERICACTORS_H_GEN_DIR "${ACTOR_GEN_DIR}/include/flow")
+file(MAKE_DIRECTORY "${GENERICACTORS_H_GEN_DIR}")
+set(GENERICACTORS_H_GEN "${GENERICACTORS_H_GEN_DIR}/genericactors.actor.g.h")
+add_custom_command(
+  OUTPUT "${GENERICACTORS_H_GEN}"
+  COMMAND ${Python3_EXECUTABLE} -m actorcompiler
+          "${CMAKE_CURRENT_SOURCE_DIR}/flow/include/flow/genericactors.actor.h" "${GENERICACTORS_H_GEN}"
+  WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+  DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/flow/include/flow/genericactors.actor.h"
+          "${ACTORCOMPILER_DIR}/__main__.py"
+          "${ACTORCOMPILER_DIR}/actor_compiler.py"
+          "${ACTORCOMPILER_DIR}/actor_parser.py"
+          "${ACTORCOMPILER_DIR}/parse_tree.py"
+          "${ACTORCOMPILER_DIR}/errors.py"
+  COMMENT "actorcompiler: genericactors.actor.h -> genericactors.actor.g.h")
+add_custom_target(GenericActorsHeader DEPENDS "${GENERICACTORS_H_GEN}")
 
 # --- flow library sources (plain .cpp, actor-generated files added separately) ---
 file(GLOB FLOW_SRCS CONFIGURE_DEPENDS "flow/*.cpp")
@@ -98,13 +129,29 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64")
 endif()
 
 add_library(flow STATIC ${FLOW_SRCS})
-add_dependencies(flow ProtocolVersion)
+if(WIN32 AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+  # clang's optimizer segfaults (ICE in the jump-threading pass) on the
+  # UDPSocket::connect coroutine in Net2.cpp: clang 22 at /O2, clang 20 (the
+  # GitHub runner's LLVM) even at /O1. Compile just this TU at /Od - the later
+  # option wins in cl-style command lines, so appending is enough.
+  set_source_files_properties(flow/Net2.cpp PROPERTIES COMPILE_OPTIONS "/Od")
+endif()
+add_dependencies(flow ProtocolVersion GenericActorsHeader)
 
 target_include_directories(flow PUBLIC
   "${CMAKE_CURRENT_SOURCE_DIR}/flow/include"
   "${CODEGEN_INCLUDE_DIR}"
+  "${ACTOR_GEN_DIR}/include"
   PRIVATE
   "${CMAKE_CURRENT_SOURCE_DIR}/flow")
+
+# genericactors.actor.h's raw ACTOR/state/choose syntax only compiles two
+# ways: actorcompiler.h's IDE-only no-op macros (raw source, no
+# POST_ACTOR_COMPILER), or the actor-compiler-generated genericactors.actor.g.h
+# above (real build). NO_INTELLISENSE selects the latter unconditionally, so
+# every flow consumer - not just the two actor-generated .g.cpp files that
+# define POST_ACTOR_COMPILER themselves - gets the same, real, transformed code.
+target_compile_definitions(flow PUBLIC NO_INTELLISENSE)
 
 target_link_libraries(flow
   PUBLIC boost_target OpenSSL::SSL fmt::fmt Threads::Threads SimpleOpt crc32 libb64
@@ -128,10 +175,20 @@ if(APPLE)
 endif()
 
 target_compile_definitions(flow PUBLIC BOOST_ERROR_CODE_HEADER_ONLY BOOST_SYSTEM_NO_DEPRECATED)
-
-# --- minimal end-to-end smoke test: run one real actor via the real flow runtime ---
-add_executable(hello_actor_test examples/main.cpp "${HELLO_ACTOR_GEN}")
-target_link_libraries(hello_actor_test PRIVATE flow)
+if(WIN32)
+  # MSVC's <cmath> only exposes M_E/M_PI/etc. when this is defined before the
+  # first inclusion; a header-level #define is unreliable since fmt or Boost
+  # headers can pull in <cmath> before flow's own headers are ever reached.
+  #
+  # _WIN32_WINNT must come from the command line, not flow/config.h: TUs like
+  # Net2.cpp include boost/asio headers *before* any flow header, and Boost.Asio
+  # self-defaults _WIN32_WINNT (to 0x0601) when unset. flow/config.h sets 0x0600
+  # for TUs that include flow first (e.g. IThreadPool.cpp), so the same asio
+  # inline code gets instantiated under two different Windows targets, and the
+  # linker folds the incompatible copies - at runtime the io_context service
+  # registry then rejects its own services with "Invalid service owner".
+  target_compile_definitions(flow PUBLIC _USE_MATH_DEFINES ${WINDOWS_TARGET_DEFS})
+endif()
 
 # picoquic + picotls + mbedtls: standalone, not linked against `flow`.
 # sockloop.c/winsockloop.c are excluded on every platform (see README) -
@@ -176,6 +233,11 @@ file(GLOB PICOTLS_SRCS "thirdparty/picotls/lib/*.c")
 foreach(_ex certificate_compression.c fusion.c mbedtls.c mbedtls_sign.c openssl.c)
   list(REMOVE_ITEM PICOTLS_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/picotls/lib/${_ex}")
 endforeach()
+if(WIN32)
+  # wincompat.h (included via the picotlsvs/picotls include dir above) #defines
+  # gettimeofday to wintimeofday; without this TU, that symbol is never defined.
+  list(APPEND PICOTLS_SRCS "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/picotls/picotlsvs/picotls/wintimeofday.c")
+endif()
 
 file(GLOB PICOTLS_CIFRA_SRCS "thirdparty/picotls/lib/cifra/*.c")
 list(REMOVE_ITEM PICOTLS_CIFRA_SRCS
@@ -203,7 +265,9 @@ add_library(picoquic_vendored STATIC
   ${PICOTLS_SRCS} ${PICOTLS_CIFRA_SRCS} ${CIFRA_SRCS} ${MICROECC_SRCS}
   ${PICOQUIC_MBEDTLS_SRCS} ${MBEDTLS_SRCS} ${LOGLIB_SRCS})
 target_compile_options(picoquic_vendored PRIVATE -w)
-if(WIN32)
+# Real cl.exe (CMAKE_CXX_COMPILER_ID "MSVC") doesn't understand GNU-style
+# -Wno-error= flags; clang-cl (CMAKE_CXX_COMPILER_ID "Clang", MSVC ABI) does.
+if(WIN32 AND NOT (CMAKE_CXX_COMPILER_ID STREQUAL "MSVC"))
   target_compile_options(picoquic_vendored PRIVATE
     -Wno-error=incompatible-pointer-types
     -Wno-error=implicit-function-declaration
@@ -220,3 +284,117 @@ add_executable(picoquic_vendor_test examples/picoquic_vendor_test.c)
 target_compile_definitions(picoquic_vendor_test PRIVATE ${PICOQUIC_DEFS})
 target_include_directories(picoquic_vendor_test SYSTEM PRIVATE ${VENDOR_QUIC_INCLUDES})
 target_link_libraries(picoquic_vendor_test PRIVATE picoquic_vendored)
+
+# --- fanout-core: Lean4 kernel (slot map + subscriber dispatch), compiled to a
+# static library via the Lean toolchain's own bundled clang/llvm-ar - the
+# generated C relies on Lean-specific attributes, so it's built with the same
+# compiler that emitted it rather than the project's own CXX toolchain.
+
+find_program(LAKE_EXECUTABLE lake REQUIRED)
+find_program(LEAN_EXECUTABLE lean REQUIRED)
+
+execute_process(
+  COMMAND "${LEAN_EXECUTABLE}" --print-prefix
+  # elan resolves which toolchain "lean" means from the lean-toolchain file
+  # in the current directory; run from fanout-core/ (where that file lives)
+  # or elan has nothing to resolve against and silently prints an error to
+  # stderr while leaving LEAN_PREFIX empty.
+  WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/fanout-core"
+  OUTPUT_VARIABLE LEAN_PREFIX
+  OUTPUT_STRIP_TRAILING_WHITESPACE
+  RESULT_VARIABLE LEAN_PRINT_PREFIX_RESULT)
+if(NOT LEAN_PRINT_PREFIX_RESULT EQUAL 0 OR LEAN_PREFIX STREQUAL "")
+  message(FATAL_ERROR "lean --print-prefix failed or returned an empty prefix (exit ${LEAN_PRINT_PREFIX_RESULT})")
+endif()
+
+if(WIN32)
+  set(LEAN_CLANG "${LEAN_PREFIX}/bin/clang.exe")
+  set(LEAN_AR "${LEAN_PREFIX}/bin/llvm-ar.exe")
+  set(LEAN_RUNTIME_LIBS
+    "${LEAN_PREFIX}/lib/lean/libleanshared.dll.a"
+    "${LEAN_PREFIX}/lib/lean/libInit_shared.dll.a")
+else()
+  set(LEAN_CLANG "${LEAN_PREFIX}/bin/clang")
+  set(LEAN_AR "${LEAN_PREFIX}/bin/llvm-ar")
+  set(LEAN_RUNTIME_LIBS
+    "${LEAN_PREFIX}/lib/lean/libleanshared${CMAKE_SHARED_LIBRARY_SUFFIX}"
+    "${LEAN_PREFIX}/lib/lean/libInit_shared${CMAKE_SHARED_LIBRARY_SUFFIX}")
+endif()
+
+set(LEAN_CLANG_SYSROOT_FLAGS)
+if(APPLE)
+  # Lean's bundled clang has no Apple SDK of its own; point it at Xcode's,
+  # or system headers like stdio.h don't resolve.
+  execute_process(
+    COMMAND xcrun --show-sdk-path
+    OUTPUT_VARIABLE LEAN_CLANG_SDK_PATH
+    OUTPUT_STRIP_TRAILING_WHITESPACE)
+  set(LEAN_CLANG_SYSROOT_FLAGS -isysroot "${LEAN_CLANG_SDK_PATH}")
+endif()
+
+set(FANOUT_CORE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/fanout-core")
+set(FANOUT_CORE_IR_DIR "${FANOUT_CORE_DIR}/.lake/build/ir")
+set(FANOUT_CORE_GEN_C
+  "${FANOUT_CORE_IR_DIR}/Fanoutcore.c"
+  "${FANOUT_CORE_IR_DIR}/Fanoutcore/SlotMap.c"
+  "${FANOUT_CORE_IR_DIR}/Fanoutcore/FanoutCore.c"
+  "${FANOUT_CORE_IR_DIR}/Fanoutcore/Ffi.c")
+file(GLOB FANOUT_CORE_LEAN_SRCS CONFIGURE_DEPENDS
+  "${FANOUT_CORE_DIR}/*.lean" "${FANOUT_CORE_DIR}/Fanoutcore/*.lean")
+
+add_custom_command(
+  OUTPUT ${FANOUT_CORE_GEN_C}
+  COMMAND "${LAKE_EXECUTABLE}" build Fanoutcore
+  WORKING_DIRECTORY "${FANOUT_CORE_DIR}"
+  DEPENDS ${FANOUT_CORE_LEAN_SRCS}
+          "${FANOUT_CORE_DIR}/lakefile.toml"
+          "${FANOUT_CORE_DIR}/lean-toolchain"
+  COMMENT "lake build Fanoutcore")
+
+file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/fanout-core-obj")
+
+set(FANOUT_CORE_OBJS)
+foreach(_src ${FANOUT_CORE_GEN_C})
+  file(RELATIVE_PATH _rel "${FANOUT_CORE_IR_DIR}" "${_src}")
+  # Flatten the relative path into a unique object-file name: NAME_WE alone
+  # collides case-insensitively on Windows ("Fanoutcore.c" root module vs.
+  # "Fanoutcore/FanoutCore.c"), silently dropping one object from the archive.
+  string(REGEX REPLACE "\\.c$" "" _rel_we "${_rel}")
+  string(REPLACE "/" "_" _name "${_rel_we}")
+  set(_obj "${CMAKE_CURRENT_BINARY_DIR}/fanout-core-obj/${_name}.o")
+  add_custom_command(
+    OUTPUT "${_obj}"
+    COMMAND "${LEAN_CLANG}" -std=c11 -O2 ${LEAN_CLANG_SYSROOT_FLAGS} -I "${LEAN_PREFIX}/include" -I "${LEAN_PREFIX}/include/clang" -c "${_src}" -o "${_obj}"
+    DEPENDS ${FANOUT_CORE_GEN_C}
+    COMMENT "clang (lean toolchain): ${_rel} -> ${_name}.o")
+  list(APPEND FANOUT_CORE_OBJS "${_obj}")
+endforeach()
+
+set(FANOUT_CORE_LIB "${CMAKE_CURRENT_BINARY_DIR}/fanout-core-obj/libfanoutcore.a")
+add_custom_command(
+  OUTPUT "${FANOUT_CORE_LIB}"
+  COMMAND "${LEAN_AR}" rcs "${FANOUT_CORE_LIB}" ${FANOUT_CORE_OBJS}
+  DEPENDS ${FANOUT_CORE_OBJS}
+  COMMENT "llvm-ar (lean toolchain): libfanoutcore.a")
+add_custom_target(fanoutcore_build DEPENDS "${FANOUT_CORE_LIB}")
+
+add_library(fanoutcore_lean STATIC IMPORTED GLOBAL)
+set_target_properties(fanoutcore_lean PROPERTIES IMPORTED_LOCATION "${FANOUT_CORE_LIB}")
+add_dependencies(fanoutcore_lean fanoutcore_build)
+target_include_directories(fanoutcore_lean INTERFACE "${LEAN_PREFIX}/include")
+target_link_libraries(fanoutcore_lean INTERFACE ${LEAN_RUNTIME_LIBS})
+
+# --- picoquic_fanout_server: the Flow-driven bridge actor ---
+compile_actor_file("${CMAKE_CURRENT_SOURCE_DIR}/examples/picoquic_fanout_server.actor.cpp" FANOUT_SERVER_GEN)
+
+add_executable(picoquic_fanout_server
+  ${FANOUT_SERVER_GEN}
+  examples/fanout_core_ffi.cpp
+  examples/fanout_server_main.cpp)
+target_compile_definitions(picoquic_fanout_server PRIVATE ${PICOQUIC_DEFS})
+target_include_directories(picoquic_fanout_server PRIVATE examples)
+target_include_directories(picoquic_fanout_server SYSTEM PRIVATE ${VENDOR_QUIC_INCLUDES})
+target_link_libraries(picoquic_fanout_server PRIVATE flow picoquic_vendored fanoutcore_lean)
+if(WIN32)
+  target_link_libraries(picoquic_fanout_server PRIVATE ws2_32)
+endif()

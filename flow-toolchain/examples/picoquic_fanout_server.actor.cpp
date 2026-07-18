@@ -16,6 +16,7 @@
 // bidirectional stream it sent its SUB on.
 
 #include "fanout_core_ffi.h"
+#include "sketch_core_ffi.h"
 
 #include "flow/Platform.h"
 #include "flow/TLSConfig.h"
@@ -55,15 +56,23 @@ NetworkAddress sockaddrToNetworkAddress(const sockaddr_storage& addr) {
 	return NetworkAddress(IPAddress(ntohl(in4->sin_addr.s_addr)), ntohs(in4->sin_port), true, false);
 }
 
-// Per-stream parse state: buffers bytes until the "SUB <topic>\n" or
-// "PUB <topic>\n" header line is complete, then (for PUB) buffers the fixed-
-// size payload that follows.
+// Per-stream parse state: buffers bytes until the "SUB <topic>\n",
+// "PUB <topic>\n", or "SKB <topic>\n" header line is complete, then (for
+// PUB) buffers the fixed-size payload, or (for SKB) parses length-prefixed
+// CSP1 sketch frames.
 struct StreamState {
 	std::string buf;
 	bool headerParsed = false;
 	bool isPub = false;
+	bool isSketch = false;
 	std::string topic;
+	uint64_t roomId = 0;
 };
+
+// A sketch frame is [len u32 LE][len bytes of CSP1]. Cap len well above any
+// real stroke chunk but low enough that a corrupt length can't balloon the
+// stream buffer.
+constexpr size_t kMaxSketchFrame = 1 << 20;
 
 // One process = one shard = one fanout-core instance, so this state is a
 // single global, guarded by nothing: picoquic invokes the stream callback
@@ -102,6 +111,64 @@ void handleSub(BridgeState& state, picoquic_cnx_t* cnx, uint64_t streamId, const
 	uint64_t connId = connIdOf(cnx);
 	state.delivery[connId] = { cnx, streamId };
 	lean_object* res = fanout_sub(roomId, connId);
+	lean_dec_ref(res);
+}
+
+// SKB: subscribe like SUB (so sketch frames fan out on this stream), then
+// replay the room's accepted history so a late joiner converges to the same
+// graph as everyone who was present from the start.
+void handleSketchSub(BridgeState& state, picoquic_cnx_t* cnx, uint64_t streamId, StreamState& streamState) {
+	uint64_t roomId = getOrCreateRoom(state, streamState.topic);
+	if (roomId == FANOUT_CORE_SENTINEL) {
+		return;
+	}
+	streamState.roomId = roomId;
+	uint64_t connId = connIdOf(cnx);
+	state.delivery[connId] = { cnx, streamId };
+	lean_object* res = fanout_sub(roomId, connId);
+	lean_dec_ref(res);
+	for (const std::vector<uint8_t>& packet : sketchCoreHistory(roomId)) {
+		uint8_t lenPrefix[4] = {
+			static_cast<uint8_t>(packet.size()),
+			static_cast<uint8_t>(packet.size() >> 8),
+			static_cast<uint8_t>(packet.size() >> 16),
+			static_cast<uint8_t>(packet.size() >> 24),
+		};
+		picoquic_add_to_stream(cnx, streamId, lenPrefix, sizeof(lenPrefix), 0);
+		picoquic_add_to_stream(cnx, streamId, packet.data(), packet.size(), 0);
+	}
+}
+
+// One complete sketch frame arrived: validate + dedup through the Lean core;
+// if accepted, relay the identical frame to every other subscriber.
+void handleSketchFrame(BridgeState& state, picoquic_cnx_t* cnx, const StreamState& streamState,
+                       const uint8_t* frame, size_t frameLen) {
+	if (!sketchCoreApplyPacket(streamState.roomId, frame, frameLen)) {
+		return; // invalid or duplicate; nothing to relay.
+	}
+	uint64_t connId = connIdOf(cnx);
+	lean_object* res = fanout_pub_targets(streamState.roomId, connId);
+	if (!lean_io_result_is_ok(res)) {
+		lean_dec_ref(res);
+		return;
+	}
+	uint8_t lenPrefix[4] = {
+		static_cast<uint8_t>(frameLen),
+		static_cast<uint8_t>(frameLen >> 8),
+		static_cast<uint8_t>(frameLen >> 16),
+		static_cast<uint8_t>(frameLen >> 24),
+	};
+	lean_object* arr = lean_io_result_get_value(res);
+	size_t n = lean_array_size(arr);
+	for (size_t i = 0; i < n; i++) {
+		uint64_t targetConnId = lean_unbox_uint64(lean_array_get_core(arr, i));
+		auto it = state.delivery.find(targetConnId);
+		if (it == state.delivery.end()) {
+			continue;
+		}
+		picoquic_add_to_stream(it->second.first, it->second.second, lenPrefix, sizeof(lenPrefix), 0);
+		picoquic_add_to_stream(it->second.first, it->second.second, frame, frameLen, 0);
+	}
 	lean_dec_ref(res);
 }
 
@@ -168,9 +235,29 @@ void pumpStream(BridgeState& state, picoquic_cnx_t* cnx, uint64_t streamId, Stre
 				handleSub(state, cnx, streamId, streamState.topic);
 			} else if (verb == "PUB") {
 				streamState.isPub = true;
+			} else if (verb == "SKB") {
+				streamState.isSketch = true;
+				handleSketchSub(state, cnx, streamId, streamState);
 			} else {
 				return; // unknown verb; stop parsing this stream.
 			}
+		} else if (streamState.isSketch) {
+			// Length-prefixed CSP1 frames, indefinitely many per stream.
+			if (streamState.buf.size() < 4) {
+				return;
+			}
+			const uint8_t* b = reinterpret_cast<const uint8_t*>(streamState.buf.data());
+			size_t frameLen = static_cast<size_t>(b[0]) | (static_cast<size_t>(b[1]) << 8) |
+			                  (static_cast<size_t>(b[2]) << 16) | (static_cast<size_t>(b[3]) << 24);
+			if (frameLen > kMaxSketchFrame) {
+				return; // corrupt length; stop parsing this stream.
+			}
+			if (streamState.buf.size() < 4 + frameLen) {
+				return;
+			}
+			handleSketchFrame(state, cnx, streamState,
+			                  reinterpret_cast<const uint8_t*>(streamState.buf.data()) + 4, frameLen);
+			streamState.buf.erase(0, 4 + frameLen);
 		} else if (streamState.isPub) {
 			if (streamState.buf.size() < kEntityPacketSize) {
 				return;

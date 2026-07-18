@@ -126,8 +126,15 @@ jobs:
           server_pid=$!
           trap 'kill "$server_pid" 2>/dev/null || true' EXIT
           sleep 1
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            # The convergence test shells out to lake (sketch_graph_dump);
+            # python spawns Windows processes that can't use the Unix-style
+            # elan PATH entry, so hand it the executable directly.
+            export LAKE="$(cygpath -m "$HOME/.elan/bin/lake.exe")"
+          fi
           cd examples
           pixi run python test_picoquic_fanout.py --port 4433
+          pixi run python test_sketch_convergence.py --port 4433
 
       - name: Dump server trace logs on failure
         if: failure()

@@ -1,0 +1,93 @@
+name: sketch-core
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "flow-toolchain/sketch-core/**"
+      - ".github/workflows/sketch-core.yml"
+  pull_request:
+    paths:
+      - "flow-toolchain/sketch-core/**"
+      - ".github/workflows/sketch-core.yml"
+
+jobs:
+  ffi-test:
+    name: test_ffi (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    defaults:
+      run:
+        working-directory: flow-toolchain/sketch-core
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Lean toolchain
+        uses: leanprover/lean-action@v1
+        with:
+          lake-package-directory: flow-toolchain/sketch-core
+          build-args: "SketchCore"
+          test: false
+          lint: false
+
+      - name: "Run property tests (Plausible: codec roundtrip, RDP/fit invariants, set-order convergence, cycles)"
+        shell: bash
+        working-directory: flow-toolchain/sketch-core
+        run: lake exe test_props
+
+      - name: Locate the Lean toolchain's bundled clang + runtime libs
+        shell: bash
+        run: |
+          set -euo pipefail
+          prefix="$(lean --print-prefix)"
+          echo "LEAN_PREFIX=$prefix" >> "$GITHUB_ENV"
+
+      - name: Compile + link test_ffi
+        shell: bash
+        run: |
+          set -euo pipefail
+          exe="test_ffi"
+          SYSROOT_FLAGS=()
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            CLANG="$LEAN_PREFIX/bin/clang.exe"
+            LIBS=("$LEAN_PREFIX/lib/lean/libleanshared.dll.a" "$LEAN_PREFIX/lib/lean/libInit_shared.dll.a")
+            exe="test_ffi.exe"
+          elif [[ "${{ runner.os }}" == "macOS" ]]; then
+            CLANG="$LEAN_PREFIX/bin/clang"
+            LIBS=(-L"$LEAN_PREFIX/lib/lean" -lleanshared -lInit_shared)
+            # Lean's bundled clang has no Apple SDK of its own; point it at
+            # Xcode's, or system headers like stdio.h don't resolve.
+            SYSROOT_FLAGS=(-isysroot "$(xcrun --show-sdk-path)")
+          else
+            CLANG="$LEAN_PREFIX/bin/clang"
+            LIBS=(-L"$LEAN_PREFIX/lib/lean" -lleanshared -lInit_shared)
+          fi
+          "$CLANG" -std=c11 \
+            "${SYSROOT_FLAGS[@]}" \
+            -I"$LEAN_PREFIX/include" -I"$LEAN_PREFIX/include/clang" \
+            test_ffi.c \
+            .lake/build/ir/SketchCore.c \
+            .lake/build/ir/SketchCore/Vec3.c \
+            .lake/build/ir/SketchCore/Codec.c \
+            .lake/build/ir/SketchCore/Fit.c \
+            .lake/build/ir/SketchCore/Graph.c \
+            .lake/build/ir/SketchCore/History.c \
+            .lake/build/ir/SketchCore/Ffi.c \
+            "${LIBS[@]}" \
+            -o "$exe"
+          echo "EXE=$exe" >> "$GITHUB_ENV"
+
+      - name: "Run test_ffi (sketch-core correctness: accept/dedup/junk, history, graph)"
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            cp "$LEAN_PREFIX"/bin/*.dll .
+          else
+            export LD_LIBRARY_PATH="$LEAN_PREFIX/lib/lean:${LD_LIBRARY_PATH:-}"
+            export DYLD_LIBRARY_PATH="$LEAN_PREFIX/lib/lean:${DYLD_LIBRARY_PATH:-}"
+          fi
+          ./"$EXE"

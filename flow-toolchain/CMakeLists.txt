@@ -384,17 +384,73 @@ add_dependencies(fanoutcore_lean fanoutcore_build)
 target_include_directories(fanoutcore_lean INTERFACE "${LEAN_PREFIX}/include")
 target_link_libraries(fanoutcore_lean INTERFACE ${LEAN_RUNTIME_LIBS})
 
+# --- sketch-core: Lean4 kernel (CSP1 codec + curve fit + sketch graph),
+# built the same way as fanout-core: lake emits C, Lean's own clang/llvm-ar
+# compile and archive it.
+set(SKETCH_CORE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/sketch-core")
+set(SKETCH_CORE_IR_DIR "${SKETCH_CORE_DIR}/.lake/build/ir")
+set(SKETCH_CORE_GEN_C
+  "${SKETCH_CORE_IR_DIR}/SketchCore.c"
+  "${SKETCH_CORE_IR_DIR}/SketchCore/Vec3.c"
+  "${SKETCH_CORE_IR_DIR}/SketchCore/Codec.c"
+  "${SKETCH_CORE_IR_DIR}/SketchCore/Fit.c"
+  "${SKETCH_CORE_IR_DIR}/SketchCore/Graph.c"
+  "${SKETCH_CORE_IR_DIR}/SketchCore/History.c"
+  "${SKETCH_CORE_IR_DIR}/SketchCore/Ffi.c")
+file(GLOB SKETCH_CORE_LEAN_SRCS CONFIGURE_DEPENDS
+  "${SKETCH_CORE_DIR}/*.lean" "${SKETCH_CORE_DIR}/SketchCore/*.lean")
+
+add_custom_command(
+  OUTPUT ${SKETCH_CORE_GEN_C}
+  COMMAND "${LAKE_EXECUTABLE}" build SketchCore
+  WORKING_DIRECTORY "${SKETCH_CORE_DIR}"
+  DEPENDS ${SKETCH_CORE_LEAN_SRCS}
+          "${SKETCH_CORE_DIR}/lakefile.toml"
+          "${SKETCH_CORE_DIR}/lean-toolchain"
+  COMMENT "lake build SketchCore")
+
+file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/sketch-core-obj")
+
+set(SKETCH_CORE_OBJS)
+foreach(_src ${SKETCH_CORE_GEN_C})
+  file(RELATIVE_PATH _rel "${SKETCH_CORE_IR_DIR}" "${_src}")
+  string(REGEX REPLACE "\\.c$" "" _rel_we "${_rel}")
+  string(REPLACE "/" "_" _name "${_rel_we}")
+  set(_obj "${CMAKE_CURRENT_BINARY_DIR}/sketch-core-obj/${_name}.o")
+  add_custom_command(
+    OUTPUT "${_obj}"
+    COMMAND "${LEAN_CLANG}" -std=c11 -O2 ${LEAN_CLANG_SYSROOT_FLAGS} -I "${LEAN_PREFIX}/include" -I "${LEAN_PREFIX}/include/clang" -c "${_src}" -o "${_obj}"
+    DEPENDS ${SKETCH_CORE_GEN_C}
+    COMMENT "clang (lean toolchain): ${_rel} -> ${_name}.o")
+  list(APPEND SKETCH_CORE_OBJS "${_obj}")
+endforeach()
+
+set(SKETCH_CORE_LIB "${CMAKE_CURRENT_BINARY_DIR}/sketch-core-obj/libsketchcore.a")
+add_custom_command(
+  OUTPUT "${SKETCH_CORE_LIB}"
+  COMMAND "${LEAN_AR}" rcs "${SKETCH_CORE_LIB}" ${SKETCH_CORE_OBJS}
+  DEPENDS ${SKETCH_CORE_OBJS}
+  COMMENT "llvm-ar (lean toolchain): libsketchcore.a")
+add_custom_target(sketchcore_build DEPENDS "${SKETCH_CORE_LIB}")
+
+add_library(sketchcore_lean STATIC IMPORTED GLOBAL)
+set_target_properties(sketchcore_lean PROPERTIES IMPORTED_LOCATION "${SKETCH_CORE_LIB}")
+add_dependencies(sketchcore_lean sketchcore_build)
+target_include_directories(sketchcore_lean INTERFACE "${LEAN_PREFIX}/include")
+target_link_libraries(sketchcore_lean INTERFACE ${LEAN_RUNTIME_LIBS})
+
 # --- picoquic_fanout_server: the Flow-driven bridge actor ---
 compile_actor_file("${CMAKE_CURRENT_SOURCE_DIR}/examples/picoquic_fanout_server.actor.cpp" FANOUT_SERVER_GEN)
 
 add_executable(picoquic_fanout_server
   ${FANOUT_SERVER_GEN}
   examples/fanout_core_ffi.cpp
+  examples/sketch_core_ffi.cpp
   examples/fanout_server_main.cpp)
 target_compile_definitions(picoquic_fanout_server PRIVATE ${PICOQUIC_DEFS})
 target_include_directories(picoquic_fanout_server PRIVATE examples)
 target_include_directories(picoquic_fanout_server SYSTEM PRIVATE ${VENDOR_QUIC_INCLUDES})
-target_link_libraries(picoquic_fanout_server PRIVATE flow picoquic_vendored fanoutcore_lean)
+target_link_libraries(picoquic_fanout_server PRIVATE flow picoquic_vendored fanoutcore_lean sketchcore_lean)
 if(WIN32)
   target_link_libraries(picoquic_fanout_server PRIVATE ws2_32)
 endif()

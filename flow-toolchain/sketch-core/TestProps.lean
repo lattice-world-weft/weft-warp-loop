@@ -103,6 +103,30 @@ def propSeqOrderInvariance (peer stroke : Nat)
     return h.graphJson
   return apply packets == apply shuffled
 
+/-- Set-permutation invariance: the graph is a function of the packet SET,
+    not the arrival order. This is THE convergence contract - each peer sees
+    the same packets in a different order (its own strokes apply before the
+    relay round-trip), and all peers must converge to identical graphs. -/
+def propSetOrderInvariance (strokeSeeds : List (Nat × Nat × List (Nat × Nat × Nat × Nat)))
+    (shuffleSeed : Nat) : Bool := Id.run do
+  -- Stroke ids are assigned by list index: the protocol contract is that a
+  -- (peer, stroke, seq) key is never reused with different contents (the
+  -- server dedups on it), so the generator must not fabricate collisions.
+  let packets := (strokeSeeds.take 8).zipIdx.map (fun ((peer, _, seeds), idx) =>
+    (mkPacket (peer % 4) idx 0 (peer % 2 == 0) ((1,2,3,4) :: seeds)).encode)
+  let n := packets.length
+  if n == 0 then
+    return true
+  let rot := shuffleSeed % n
+  let shuffled := packets.drop rot ++ packets.take rot
+  let shuffled := if shuffleSeed % 2 == 1 then shuffled.reverse else shuffled
+  let apply (ps : List ByteArray) : String := Id.run do
+    let mut h := RoomHistory.empty
+    for p in ps do
+      h := (h.apply p).1
+    return h.graphJson
+  return apply packets == apply shuffled
+
 /-- Cyclomatic count: k disjoint closed squares produce exactly k cycles. -/
 def propSquareCycles (kSeed : Nat) : Bool := Id.run do
   let k := kSeed % 4 + 1
@@ -117,18 +141,23 @@ def propSquareCycles (kSeed : Nat) : Bool := Id.run do
     h := (h.apply p.encode).1
   return Graph.cycleCount (Graph.build (h.strokes)) == k
 
-/-- Run one property; print the counterexample and exit non-zero on failure. -/
+/-- Run one property; print the counterexample and exit non-zero on failure.
+    Streams are flushed before exit - IO.Process.exit does not flush, and a
+    swallowed FALSIFIED report turns a red test into a silent exit code. -/
 def runCheck (name : String) (p : Prop) [Testable p] (cfg : Configuration) : IO Unit := do
   IO.println s!"prop: {name}"
+  (← IO.getStdout).flush
   match ← Testable.checkIO p cfg with
   | .success _ => pure ()
   | .gaveUp n =>
     IO.eprintln s!"  GAVE UP after {n} discarded test cases"
+    (← IO.getStderr).flush
     IO.Process.exit 1
   | .failure _ counterexample n =>
     IO.eprintln s!"  FALSIFIED after {n} tests, counterexample:"
     for line in counterexample do
       IO.eprintln s!"    {line}"
+    (← IO.getStderr).flush
     IO.Process.exit 1
 
 def main : IO Unit := do
@@ -168,6 +197,11 @@ def main : IO Unit := do
      NamedBinder "chunks" <| ∀ (chunks : List (List (Nat × Nat × Nat × Nat))),
      NamedBinder "shuffleSeed" <| ∀ (shuffleSeed : Nat),
        propSeqOrderInvariance peer stroke chunks shuffleSeed = true) cfg
+
+  runCheck "graph is a function of the packet SET (arrival-order invariance)"
+    (NamedBinder "strokeSeeds" <| ∀ (strokeSeeds : List (Nat × Nat × List (Nat × Nat × Nat × Nat))),
+     NamedBinder "shuffleSeed" <| ∀ (shuffleSeed : Nat),
+       propSetOrderInvariance strokeSeeds shuffleSeed = true) cfg
 
   runCheck "k disjoint closed squares => k cycles"
     (NamedBinder "kSeed" <| ∀ (kSeed : Nat),

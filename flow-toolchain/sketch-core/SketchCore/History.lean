@@ -36,7 +36,11 @@ def apply (h : RoomHistory) (bytes : ByteArray) : RoomHistory × Bool :=
     concatenate in seq order (the log already holds them in accepted
     order; we sort per-stroke by seq for robustness against reordering). -/
 def strokes (h : RoomHistory) : Array Stroke := Id.run do
-  -- Group in first-seen order of (peerId, strokeId).
+  -- Group by (peerId, strokeId), then order groups CANONICALLY by that key:
+  -- peers see the same packets in different orders (a peer's own strokes
+  -- apply before the relay round-trip), and graph node numbering follows
+  -- stroke order - so convergence requires the graph to be a function of
+  -- the packet SET, not the arrival sequence.
   let mut order : Array (UInt32 × UInt32) := #[]
   let mut groups : Array (Array StrokePacket) := #[]
   for bytes in h.packets do
@@ -52,8 +56,24 @@ def strokes (h : RoomHistory) : Array Stroke := Id.run do
       if !found then
         order := order.push gk
         groups := groups.push #[p]
-  let mut out : Array Stroke := #[]
+  -- Canonical group order: insertion sort by (peerId, strokeId).
+  let mut sortedIdx : Array Nat := #[]
   for i in [0:order.size] do
+    let (pi, si) := order[i]!
+    let mut inserted := false
+    let mut acc : Array Nat := #[]
+    for j in sortedIdx do
+      let (pj, sj) := order[j]!
+      if !inserted && (pi < pj || (pi == pj && si < sj)) then
+        acc := (acc.push i).push j
+        inserted := true
+      else
+        acc := acc.push j
+    if !inserted then
+      acc := acc.push i
+    sortedIdx := acc
+  let mut out : Array Stroke := #[]
+  for i in sortedIdx do
     let g := groups[i]!
     -- insertion sort by seq (tiny arrays, deterministic)
     let mut sorted : Array StrokePacket := #[]

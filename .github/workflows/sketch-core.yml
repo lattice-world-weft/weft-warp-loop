@@ -63,7 +63,9 @@ jobs:
             SYSROOT_FLAGS=(-isysroot "$(xcrun --show-sdk-path)")
           else
             CLANG="$LEAN_PREFIX/bin/clang"
-            LIBS=(-L"$LEAN_PREFIX/lib/lean" -lleanshared -lInit_shared)
+            # -lm: the Lean IR calls floor/ceil/sqrt directly; glibc keeps
+            # them in libm, unlike the Windows/macOS system libraries.
+            LIBS=(-L"$LEAN_PREFIX/lib/lean" -lleanshared -lInit_shared -lm)
           fi
           "$CLANG" -std=c11 \
             "${SYSROOT_FLAGS[@]}" \

@@ -33,6 +33,11 @@ jobs:
           test: false
           lint: false
 
+      - name: "Run property tests (Plausible: slot-map/model agreement, id freshness, fanout algebra)"
+        shell: bash
+        working-directory: flow-toolchain/fanout-core
+        run: lake exe test_props
+
       - name: Locate the Lean toolchain's bundled clang + runtime libs
         shell: bash
         run: |

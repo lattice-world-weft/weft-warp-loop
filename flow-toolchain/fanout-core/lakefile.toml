@@ -4,3 +4,15 @@ defaultTargets = ["Fanoutcore"]
 
 [[lean_lib]]
 name = "Fanoutcore"
+
+# Property tests only - the Fanoutcore library itself has no dependencies,
+# and the C static library linked into the C++ host is built from the
+# Fanoutcore target alone, so plausible never enters the shipped artifact.
+[[require]]
+name = "plausible"
+git = "https://github.com/leanprover-community/plausible"
+rev = "v4.30.0"
+
+[[lean_exe]]
+name = "test_props"
+root = "TestProps"

@@ -549,16 +549,31 @@ target_link_libraries(sketchcore_lean INTERFACE ${LEAN_RUNTIME_LIBS})
 
 # --- picoquic_fanout_server: the Flow-driven bridge actor ---
 compile_actor_file("${CMAKE_CURRENT_SOURCE_DIR}/examples/picoquic_fanout_server.actor.cpp" FANOUT_SERVER_GEN)
+compile_actor_file("${CMAKE_CURRENT_SOURCE_DIR}/examples/fanout_server_main.actor.cpp" FANOUT_SERVER_MAIN_GEN)
 
 add_executable(picoquic_fanout_server
   ${FANOUT_SERVER_GEN}
   examples/fanout_core_ffi.cpp
   examples/sketch_core_ffi.cpp
-  examples/fanout_server_main.cpp)
+  ${FANOUT_SERVER_MAIN_GEN})
 target_compile_definitions(picoquic_fanout_server PRIVATE ${PICOQUIC_DEFS})
 target_include_directories(picoquic_fanout_server PRIVATE examples)
 target_include_directories(picoquic_fanout_server SYSTEM PRIVATE ${VENDOR_QUIC_INCLUDES})
 target_link_libraries(picoquic_fanout_server PRIVATE flow picoquic_vendored fanoutcore_lean sketchcore_lean)
 if(WIN32)
   target_link_libraries(picoquic_fanout_server PRIVATE ws2_32)
+endif()
+
+# --- fanout_load_client: a Flow-actor QUIC load driver against picoquic_fanout_server ---
+compile_actor_file("${CMAKE_CURRENT_SOURCE_DIR}/examples/fanout_load_client.actor.cpp" FANOUT_LOAD_CLIENT_GEN)
+compile_actor_file("${CMAKE_CURRENT_SOURCE_DIR}/examples/fanout_load_client_main.actor.cpp" FANOUT_LOAD_CLIENT_MAIN_GEN)
+
+add_executable(fanout_load_client
+  ${FANOUT_LOAD_CLIENT_GEN}
+  ${FANOUT_LOAD_CLIENT_MAIN_GEN})
+target_compile_definitions(fanout_load_client PRIVATE ${PICOQUIC_DEFS})
+target_include_directories(fanout_load_client SYSTEM PRIVATE ${VENDOR_QUIC_INCLUDES})
+target_link_libraries(fanout_load_client PRIVATE flow picoquic_vendored)
+if(WIN32)
+  target_link_libraries(fanout_load_client PRIVATE ws2_32)
 endif()

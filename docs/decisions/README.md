@@ -8,3 +8,4 @@ weft-warp-loop stack. One decision per file, numbered in acceptance order.
 - [0003 — Vendor the cassie beautify solver behind a plain-C ABI](0003-vendor-cassie-beautify-solver-plain-c-abi.md)
 - [0004 — Sketch graph intersects tessellated polylines, not exact Béziers](0004-polyline-tessellation-over-exact-bezier-intersection.md)
 - [0005 — Defer surface patches and the AVBD/Slang solver](0005-defer-surface-patches-and-avbd.md)
+- [0006 — Sandbox a Lisp-1 in libriscv for scripted simulation content, over a native Janet layer](0006-libriscv-sandboxed-s7-lisp-over-native-janet.md)

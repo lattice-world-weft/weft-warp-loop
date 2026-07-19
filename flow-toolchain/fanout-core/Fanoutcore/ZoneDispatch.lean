@@ -56,7 +56,23 @@ def ZoneWorld.authorityFor (w : ZoneWorld) (pos : Pos3) : Option Id :=
     (`Zone.entities`), matching `Room.subscribers`'s existing flat-array
     shape, rather than in a separate global entity table - a zone's own
     membership list is exactly what changes on migration (`moveEntity`
-    below). -/
+    below).
+
+    No dedup check against `result` here (an earlier version had one,
+    `!result.contains connId`): `reach`'s zones are pairwise distinct
+    indices (`adjacentZones` never returns `authIdx` itself, and its
+    "before"/"after" neighbours are themselves distinct by construction),
+    and `moveEntityToIndex` maintains the invariant that an entity lives
+    in at most one zone at a time (proven:
+    `migrating to a different zone removes the entity from its previous
+    zone` in TestProps.lean) - so no connId can appear in two different
+    zones' `entities` arrays to begin with. The check was a redundant
+    O(result.size) scan on every insertion, making target construction
+    O(reach-population^2) instead of O(reach-population) for no
+    correctness benefit - a real algorithmic cost this repo's own load
+    testing (fanout_load_client) measured directly (super-quadratic
+    growth well past what O(N^2) target construction alone would predict,
+    since this ran once per publisher per tick). -/
 def ZoneWorld.targetsForIndex (w : ZoneWorld) (publisherConnId : UInt64) (idx : UInt64) : Array UInt64 := Id.run do
   let live := w.liveZones
   let plain := live.map (·.2)
@@ -68,7 +84,7 @@ def ZoneWorld.targetsForIndex (w : ZoneWorld) (publisherConnId : UInt64) (idx : 
     for i in reach do
       if h : i < plain.size then
         for connId in plain[i].entities do
-          if connId != publisherConnId && !result.contains connId then
+          if connId != publisherConnId then
             result := result.push connId
     return result
 

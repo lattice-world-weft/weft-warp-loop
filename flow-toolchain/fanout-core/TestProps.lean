@@ -236,6 +236,27 @@ def sameZoneTargetsEachOtherCheck (lens : List Nat) (connA connB idx : Nat) : Bo
     let w2 := w1.moveEntityToIndex connB.toUInt64 boundedIdx
     (w2.targetsForIndex connA.toUInt64 boundedIdx).contains connB.toUInt64
 
+/-- True iff `targetsForIndex` never returns duplicate connIds - the
+    regression guard for dropping targetsForIndex's redundant dedup check
+    (an entity can only ever be in one zone at a time, so it can only
+    ever appear once across the authority + curve-adjacent zones a
+    publish reaches; this exercises several entities scattered across
+    several zones to check that directly, not just assume it). -/
+def noDuplicateTargetsCheck (lens : List Nat) (conns : List Nat) (idxs : List Nat) : Bool :=
+  let w := zoneWorldFromLengths 8 lens
+  if w.liveZones.size == 0 then true
+  else
+    let span := max w.totalSpan 1
+    let placements := List.zip conns idxs
+    let w' :=
+      placements.foldl (fun (acc : ZoneWorld) (c, i) => acc.moveEntityToIndex c.toUInt64 (i.toUInt64 % span)) w
+    match conns, idxs with
+    | c0 :: _, i0 :: _ =>
+      let targets := w'.targetsForIndex c0.toUInt64 (i0.toUInt64 % span)
+      (List.range targets.size).all fun i =>
+        (List.range targets.size).all fun j => i == j || targets[i]! != targets[j]!
+    | _, _ => true
+
 /-- True iff, after `removeEntity`, the connId is gone from every zone. -/
 def removeEntityCheck (lens : List Nat) (connId idx : Nat) : Bool :=
   let w := zoneWorldFromLengths 8 lens
@@ -348,5 +369,11 @@ def main : IO Unit := do
      NamedBinder "connId" <| ∀ (connId : Nat),
      NamedBinder "idx" <| ∀ (idx : Nat),
       removeEntityCheck lens connId idx = true) cfg
+
+  runCheck "targetsForIndex never returns duplicate connIds (regression guard for dropping the redundant dedup check)"
+    (NamedBinder "lens" <| ∀ (lens : List Nat),
+     NamedBinder "conns" <| ∀ (conns : List Nat),
+     NamedBinder "idxs" <| ∀ (idxs : List Nat),
+      noDuplicateTargetsCheck lens conns idxs = true) cfg
 
   IO.println "ALL PROPERTY TESTS PASSED"

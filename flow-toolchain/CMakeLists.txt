@@ -351,15 +351,19 @@ target_link_libraries(artifacts_mmo_h3_client PRIVATE picoquic_vendored)
 
 # --- libriscv: the RISC-V sandbox substrate for ADR 0006's scripted-content
 # tier (docs/decisions/0006-libriscv-sandboxed-s7-lisp-over-native-janet.md).
-# Host-side library only here - no guest language (s7) is vendored or built
-# yet. RISCV_BINARY_TRANSLATION is off: it shells out to a system C compiler
+# RISCV_BINARY_TRANSLATION is off: it shells out to a system C compiler
 # at guest-load time to JIT-translate hot guest code, which is unneeded for
 # proving the vendored interpreter itself and is extra attack surface for a
 # sandbox whose whole point is a closed, host-controlled execution boundary.
+# RISCV_BRK_MEMORY_SIZE is bumped from the 1MB default: s7_init() alone
+# needs more heap than that (found the hard way - an unpatched 1MB limit
+# made malloc return NULL partway through init, s7 doesn't check, and the
+# guest hit a protection fault dereferencing it).
 set(RISCV_32I OFF CACHE BOOL "" FORCE)
 set(RISCV_64I ON CACHE BOOL "" FORCE)
 set(RISCV_BINARY_TRANSLATION OFF CACHE BOOL "" FORCE)
 add_subdirectory(thirdparty/libriscv/lib)
+target_compile_definitions(riscv PUBLIC RISCV_BRK_MEMORY_SIZE=134217728ull)
 if(WIN32)
   # windows.h's min/max macros shadow std::min/std::max in
   # thirdparty/libriscv/lib/libriscv/win32/system_calls.cpp; upstream
@@ -371,6 +375,23 @@ add_executable(libriscv_vendor_test examples/libriscv_vendor_test.cpp)
 target_compile_definitions(libriscv_vendor_test PRIVATE
   LIBRISCV_VENDOR_TEST_GUEST_ELF="${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/libriscv/examples/embed/fib.rv64.elf")
 target_link_libraries(libriscv_vendor_test PRIVATE riscv)
+
+# --- s7_riscv_actor_test: a real Flow actor (s7_riscv_actor.actor.cpp)
+# calling into the libriscv-sandboxed s7 guest (riscv-guests/s7_guest.elf,
+# built from riscv-guests/s7_guest_main.c - see riscv-guests/README.md for
+# the newlib cross-compile recipe; not built by this CMake project, since
+# it needs a separate RISC-V toolchain this build doesn't otherwise
+# require). Proves ADR 0006's scripting tier actually composes with
+# Flow's actor scheduling and replays deterministically: two independent
+# libriscv Machine instances, driven through the same actor, cost the
+# identical total instruction count for the identical call sequence.
+compile_actor_file("${CMAKE_CURRENT_SOURCE_DIR}/examples/s7_riscv_actor.actor.cpp" S7_RISCV_ACTOR_GEN)
+add_executable(s7_riscv_actor_test
+  examples/s7_riscv_actor_test.cpp
+  examples/s7_riscv_core.cpp
+  "${S7_RISCV_ACTOR_GEN}")
+target_include_directories(s7_riscv_actor_test PRIVATE examples)
+target_link_libraries(s7_riscv_actor_test PRIVATE flow riscv)
 
 # --- fanout-core: Lean4 kernel (slot map + subscriber dispatch), compiled to a
 # static library via the Lean toolchain's own bundled clang/llvm-ar - the

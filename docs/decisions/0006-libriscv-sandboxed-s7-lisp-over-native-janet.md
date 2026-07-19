@@ -13,40 +13,65 @@ Accepted (a future PR; not yet fully implemented). Implementation status:
   instruction counts and return values.
 - Done: s7 vendored (`flow-toolchain/thirdparty/s7`, pinned to a specific
   upstream commit — no tagged releases exist to pin to instead).
-- In progress: cross-compiling s7 into a RISC-V guest needs a libc. musl
-  is off the table by explicit constraint, and vendoring newlib or
-  another general-purpose libc project raises the same objection, so the
-  path is a small libc subset hand-built for exactly what s7 needs.
-  `flow-toolchain/thirdparty/s7/MINIMAL_LIBC_SCOPE.md` scopes that
-  surface by reading `s7.c` directly: `dlfcn.h`/`fcntl.h`/`dirent.h`/
-  `signal.h` all sit behind config macros that default off (s7's own
-  embedding docs confirm `mus-config.h` can be empty), and `sys/stat.h`
-  drops out entirely by defining `MS_WINDOWS=1`. What remains is
-  `ctype.h`/`string.h`/`stdlib.h` (small, mechanical), `setjmp.h` (likely
-  free via compiler builtins), an open question on `time.h` (real clock
-  vs. a host-supplied deterministic tick), and `math.h` (~23
-  transcendental functions — the real remaining work). No code written
-  yet.
-- Designed, not yet buildable: the syscall allowlist (default-deny,
-  `exit`/`exit_group` only) and the VMCALL boundary shape, in
-  `flow-toolchain/examples/riscv_guest_host_interface.md`. Grounded in
-  the vendored libriscv API, but nothing here compiles yet — there is no
-  guest binary to link against.
-- Open, unresolved: item 7's fuel budget per call site. This repo's Flow
+- Done: the libc question is resolved — not hand-built, not musl.
+  A real newlib toolchain (xPack's prebuilt `riscv-none-elf-gcc`,
+  https://github.com/xpack-dev-tools/riscv-none-elf-gcc-xpack) compiles
+  `s7.c` cleanly for RISC-V with two flags (`-DWITH_C_LOADER=0
+  -DWITH_SYSTEM_EXTRAS=0`, both config macros `s7.c` itself defaults on
+  for any non-MSVC compiler, pulling in `dlfcn.h`/`dirent.h` newlib
+  doesn't provide freestanding). `flow-toolchain/thirdparty/s7/
+  MINIMAL_LIBC_SCOPE.md`'s earlier hand-built-libc scoping work is
+  superseded by this — recorded there as history, not the live plan.
+- Done: **s7 actually runs inside libriscv.** `flow-toolchain/
+  riscv-guests/s7_guest.elf` (`s7.c` + `riscv-guests/s7_guest_main.c`)
+  evaluates real Scheme expressions correctly inside the vendored
+  sandbox — verified values, not just "it linked": `(+ 1 2 3)` → `6`,
+  `(* 6 7)` → `42`, string and loop expressions correct too. Two real
+  bugs found and fixed getting here, both recorded in `riscv-guests/
+  README.md`: `RISCV_BRK_MEMORY_SIZE`'s 1MB default is nowhere near
+  enough for `s7_init()`'s own heap needs (raised to 128MB on the
+  `riscv` CMake target), and libriscv's `Memory` keeps a non-owning
+  `std::string_view` over the guest ELF bytes, not a copy — a
+  function-local buffer in the first version of the host wrapper went
+  out of scope before later `vmcall`s used it.
+- Done: the VMCALL boundary and fuel metering both work and are proven
+  deterministic — not just designed. `guest_eval` is called through
+  libriscv's documented VMCALL pattern; two independent `Machine`
+  instances given the identical call sequence produce byte-identical
+  instruction counts every time (270,311, repeatable, checked over
+  several runs). `flow-toolchain/examples/riscv_guest_host_interface.md`
+  is now a description of what's built, not a proposal — the syscall
+  allowlist narrowing (default-deny beyond `setup_linux_syscalls()`'s
+  full surface) is the one piece in that doc still ahead of the code.
+- Done: **called from a real Flow actor, not just a bare host loop.**
+  `flow-toolchain/examples/s7_riscv_actor.actor.cpp` is a genuine
+  `ACTOR`, transformed by the vendored actor-compiler, linked against
+  the real `flow.lib` (Boost/OpenSSL, this repo's actual build, not a
+  scratch stand-in) — `s7_riscv_actor_test.cpp` drives it twice, against
+  two independently-initialized libriscv Machines, and confirms
+  identical total fuel cost through the actor both times. This is the
+  concrete answer to "is libriscv's gas/sandbox model compatible with
+  Flow's deterministic replay": yes, verified, not just argued.
+- Reversed: the native-host devtool tier (a separate unsandboxed s7
+  build for REPL-style access, ADR 0006's original item 10) was built
+  this session, then deliberately deleted once the sandboxed path above
+  was proven working — "direct s7 access" was a stepping stone, not the
+  destination. s7 now has exactly one execution path: inside libriscv.
+- Open, unresolved: the fuel budget per call site. This repo's Flow
   runtime has no existing fixed-tick/timestep concept to size a budget
   against (`flow-toolchain/flow/` is a pure event-driven actor runtime,
   not a fixed-timestep loop) — sizing this needs a product decision
   (how expensive a single scripted decision is allowed to be), not
-  something derivable from the codebase as it stands.
-- Decided: the devtool-only role (REPL against `Fanoutcore/Ffi.lean`/
-  `SketchCore/Ffi.lean`, the ADR 0002 cert-mint script) is served by a
-  native host build of the same s7 + shrubbery-reader source, linked
-  against the ordinary system libc — not Janet, and not a second
-  language. See the Decision Outcome's note on option 1. Not
-  implemented yet.
-- Not started: the shrubbery-style reader itself, and the FP-stress
-  byte-compare re-verification — both depend on a working s7 guest
-  binary existing first (which depends on the libc work above).
+  something derivable from the codebase as it stands. The proof above
+  uses a fixed 2,000,000-instruction ceiling per call as a placeholder,
+  not a sized answer to this question.
+- Not started: the shrubbery-style reader (the guest takes plain s7
+  s-expression text today), narrowing the syscall table to the
+  documented default-deny design (the guest currently gets the full
+  `setup_linux_syscalls()` surface, not the `exit`-only allowlist
+  `riscv_guest_host_interface.md` calls for), and the FP-stress
+  byte-compare re-verification (ADR 0004's precedent) against real
+  scripted content once any exists beyond arithmetic/string smoke tests.
 
 ## Context and Problem Statement
 

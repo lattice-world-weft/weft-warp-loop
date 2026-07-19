@@ -2,6 +2,7 @@ build/
 build_local/
 flow-toolchain/vcpkg_installed/
 __pycache__/
-# picoquic_fanout_server writes flow trace logs into its cwd
+# picoquic_fanout_server / s7_riscv_actor_test write flow trace logs into their cwd
 fanout_server.*.xml
+s7_riscv_actor_test.*.xml
 /flow-toolchain/sketch-core/.lake/

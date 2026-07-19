@@ -33,8 +33,19 @@ releases/tags to pin to), commit `84c9c62bf4c0e3f5c605975f43492387ca3bf78b`
 lives in `s7/s7.c`'s header comment — a permissive BSD-style grant
 ("permission to use, copy, modify, distribute, and license this software
 ... for any purpose. No written agreement, license, or royalty fee is
-required"). This is ADR 0006's chosen guest Lisp-1; nothing yet
-cross-compiles it to RISC-V or wires it into libriscv.
+required"). This is ADR 0006's chosen guest Lisp-1, now actually
+cross-compiled and running inside libriscv — see `../riscv-guests/`.
+
+`../riscv-guests/s7_guest.elf` is `s7/s7.c` +
+`riscv-guests/s7_guest_main.c` (this project's own code), cross-compiled
+with a real newlib toolchain — xPack's prebuilt
+`riscv-none-elf-gcc` (https://github.com/xpack-dev-tools/riscv-none-elf-gcc-xpack,
+v15.2.0-1, Windows x64 build), not built from source here. See
+`riscv-guests/README.md` for the exact build recipe and the two real
+bugs (a 1MB default heap limit, and a dangling `std::string_view` over a
+destroyed buffer) it took to get running correctly, both inside libriscv
+and through a real Flow actor
+(`flow-toolchain/examples/s7_riscv_actor.actor.cpp`).
 
 `../certs/mozilla-cacert.pem` is Mozilla's root CA bundle, packaged by
 curl.se's `mk-ca-bundle.pl` (https://curl.se/docs/caextract.html),

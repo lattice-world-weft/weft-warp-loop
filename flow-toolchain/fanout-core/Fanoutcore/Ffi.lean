@@ -73,24 +73,35 @@ def zoneFree (zoneId : UInt64) : IO Unit := do
   let s ← stateRef.get
   stateRef.set { s with zoneWorld := s.zoneWorld.freeZone (Id.unpack zoneId) }
 
+/-- Splits/merges the zone `pos` now lands in after a move, cost-decided
+    (`Partition.lean`'s `splitIsCheaper`) - checked on every move rather
+    than a separate timer/tick, since population changes exactly when
+    entities move. Shared by both `entityMove` (zero velocity) and
+    `entityMoveV` (real velocity) so the split-check logic has one
+    definition. -/
+def rebalanceAfterMove (w : ZoneWorld) (pos : Pos3) : ZoneWorld :=
+  match w.authorityFor pos with
+  | none => w
+  | some zoneId => w.maybeSplitZone zoneId
+
 @[export fanout_entity_move]
 def entityMove (connId : UInt64) (x : Int64) (y : Int64) (z : Int64) : IO Unit := do
   let s ← stateRef.get
   let pos : Pos3 := { x := x, y := y, z := z }
   let moved := s.zoneWorld.moveEntity connId pos
-  -- AV1-style split/merge (ADR 0008/0009, Partition.lean): check the zone
-  -- the entity just landed in for a split every move, not on a separate
-  -- timer/tick - population changes exactly when entities move, so there
-  -- is no reason to defer the check to a later pass (and no separate
-  -- scheduling mechanism to keep in sync with this one if there were).
-  -- `maybeSplitZone` itself decides whether splitting is cost-favourable
-  -- (Partition.lean's `splitIsCheaper`); no separate threshold parameter
-  -- to keep in sync with it.
-  let final :=
-    match moved.authorityFor pos with
-    | none => moved
-    | some zoneId => moved.maybeSplitZone zoneId
-  stateRef.set { s with zoneWorld := final }
+  stateRef.set { s with zoneWorld := rebalanceAfterMove moved pos }
+
+/-- `entityMove` with a known velocity magnitude per axis (μm/tick,
+    absolute value - `EntityRecord`), for k-tick ghost expansion once a
+    caller (the wire protocol, later work) actually sends it. `entityMove`
+    above stays the zero-velocity convenience path for callers that don't
+    track it. -/
+@[export fanout_entity_move_v]
+def entityMoveV (connId : UInt64) (x : Int64) (y : Int64) (z : Int64) (vx vy vz : UInt64) : IO Unit := do
+  let s ← stateRef.get
+  let pos : Pos3 := { x := x, y := y, z := z }
+  let moved := s.zoneWorld.moveEntityV connId pos vx vy vz
+  stateRef.set { s with zoneWorld := rebalanceAfterMove moved pos }
 
 @[export fanout_entity_remove]
 def entityRemove (connId : UInt64) : IO Unit := do
@@ -101,7 +112,7 @@ def entityRemove (connId : UInt64) : IO Unit := do
   -- could become cost-favourable) has a zone to check. Its id is still
   -- valid after `removeEntity` (that only edits entity membership, never
   -- frees/reallocs zones), so it's still the right handle to check.
-  let leavingZoneId := s.zoneWorld.liveZones.find? (fun (_, z) => z.entities.any (·.1 == connId)) |>.map (·.1)
+  let leavingZoneId := s.zoneWorld.liveZones.find? (fun (_, z) => z.entities.any (·.connId == connId)) |>.map (·.1)
   let removed := s.zoneWorld.removeEntity connId
   let final :=
     match leavingZoneId with

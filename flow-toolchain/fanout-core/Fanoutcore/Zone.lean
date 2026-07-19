@@ -107,6 +107,19 @@ def hilbertIndexOfGrid (bits : Nat) (px py pz : UInt64) : UInt64 := Id.run do
 def hilbert3D (bits : Nat) (p : Pos3) : UInt64 :=
   hilbertIndexOfGrid bits (quantizeAxis bits p.x) (quantizeAxis bits p.y) (quantizeAxis bits p.z)
 
+/-- k-tick kinematic ghost expansion, per axis (`AuthorityInterest.lean`'s
+    `interestLookahead`, `Formula.lean`'s `expansion`): how far an entity
+    moving at velocity `v` (μm/tick, magnitude) with half-acceleration
+    `aHalf` (μm/tick², `⌈½|a|⌉` folded in by the caller at parse time, same
+    convention as the real prior art) could travel in `k` ticks -
+    `v*k + aHalf*k^2`, the exact kinematic ½at² formula. This is what
+    turns "same zone" from a blanket visibility proxy into real
+    predictive interest: an entity's ghost only needs to reach a
+    neighbouring zone `k` ticks *before* it physically crosses, not
+    react after the fact. -/
+def ghostExpansion (v aHalf k : UInt64) : UInt64 :=
+  v * k + aHalf * k * k
+
 /-- A zone's authority range along the 1D Hilbert curve: the half-open
     interval `[start, stop)` of curve indices this zone owns. Variable-
     length by design (ADR 0008): a Hilbert curve maps a 1D range to a
@@ -136,25 +149,43 @@ def disjointRanges (rs : Array ZoneRange) : Bool :=
     (List.range rs.size).all fun j =>
       i == j || !(ZoneRange.overlaps rs[i]! rs[j]!)
 
+/-- One entity's authority record: connId, its curve index (for authority
+    range lookups), and its velocity magnitude per axis (micrometres/tick,
+    *absolute value* - matching `AuthorityInterest.lean`'s own convention:
+    k-tick ghost expansion (`Formula.lean`'s `expansion v a_half k := v*k +
+    a_half*k*k`) only needs how far something could move, not which
+    direction, so a signed velocity would just be extra information the
+    formula immediately discards via `abs`. Zero velocity (the default
+    before any `entityMoveV`-style call updates it) means zero ghost
+    expansion - an entity with no known velocity is treated as
+    stationary, not unbounded. -/
+structure EntityRecord where
+  connId : UInt64
+  idx    : UInt64
+  vx     : UInt64 := 0
+  vy     : UInt64 := 0
+  vz     : UInt64 := 0
+  deriving Repr, BEq, Inhabited
+
 /-- A zone: its authority range, and the entities it currently simulates
     (analogous to `Room.subscribers`, but authority - one owner - not
-    subscription - many). Each entity's own last-known curve index is
-    carried alongside its connId (not just the connId alone, as before
-    E-GOSSIP): splitting a zone (below) needs to know which side of the
-    new midpoint each existing entity falls on, and nothing else in the
-    system otherwise tracks per-entity curve position once `moveEntity`
-    has filed it into a zone. -/
+    subscription - many). Each entity's own last-known curve index and
+    velocity are carried alongside its connId (not just the connId
+    alone, as before E-GOSSIP): splitting a zone needs to know which side
+    of a new boundary each existing entity falls on, and ghost expansion
+    needs velocity, and nothing else in the system otherwise tracks
+    either once `moveEntity` has filed an entity into a zone. -/
 structure Zone where
   range    : ZoneRange
-  entities : Array (UInt64 × UInt64) -- (connId, curve idx)
+  entities : Array EntityRecord
   deriving Repr, Inhabited
 
-def Zone.sub (z : Zone) (connId idx : UInt64) : Zone :=
-  if z.entities.any (·.1 == connId) then z
-  else { z with entities := z.entities.push (connId, idx) }
+def Zone.sub (z : Zone) (rec : EntityRecord) : Zone :=
+  if z.entities.any (·.connId == rec.connId) then z
+  else { z with entities := z.entities.push rec }
 
 def Zone.unsub (z : Zone) (connId : UInt64) : Zone :=
-  { z with entities := z.entities.filter (·.1 != connId) }
+  { z with entities := z.entities.filter (·.connId != connId) }
 
 /-- The zone whose range contains curve index `idx` is authoritative for
     whatever sits there. `none` if no zone's range covers that index - a

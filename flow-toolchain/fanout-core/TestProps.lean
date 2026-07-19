@@ -202,7 +202,7 @@ def moveThenAuthorityContainsCheck (lens : List Nat) (connId idx : Nat) : Bool :
     | some zoneId =>
       match w'.zones.find zoneId with
       | none => false
-      | some zone => zone.entities.any (·.1 == connId.toUInt64)
+      | some zone => zone.entities.any (·.connId == connId.toUInt64)
 
 /-- True iff moving an entity to a *different* zone removes it from its
     previous zone's membership - vacuously true if either index has no
@@ -217,7 +217,7 @@ def migrationLeavesOldZoneCheck (lens : List Nat) (connId idxA idxB : Nat) : Boo
       let w2 := w1.moveEntityToIndex connId.toUInt64 idxB.toUInt64
       match w2.zones.find zoneAId with
       | none => true
-      | some zoneA => !zoneA.entities.any (·.1 == connId.toUInt64)
+      | some zoneA => !zoneA.entities.any (·.connId == connId.toUInt64)
   | _, _ => true
 
 /-- True iff `targetsForIndex` never includes the publisher itself. -/
@@ -263,7 +263,7 @@ def removeEntityCheck (lens : List Nat) (connId idx : Nat) : Bool :=
   let w := zoneWorldFromLengths 8 lens
   let w1 := w.moveEntityToIndex connId.toUInt64 idx.toUInt64
   let w2 := w1.removeEntity connId.toUInt64
-  w2.liveZones.all fun (_, z) => !z.entities.any (·.1 == connId.toUInt64)
+  w2.liveZones.all fun (_, z) => !z.entities.any (·.connId == connId.toUInt64)
 
 /-- `8^d` as a `UInt64`, computed as `1 <<< (3*d)` (`UInt64` has no `HPow
     UInt64 UInt64` instance) - `8^d = 2^(3d)`, matching `octreeMaxDepth`'s
@@ -319,7 +319,7 @@ def splitPlacesEntitiesCorrectlyCheck (depth : Nat) (conns idxs : List Nat) : Bo
   | some (w, zoneId) =>
     let w' := w.maybeSplitZone zoneId
     w'.liveZones.all fun (_, z) =>
-      z.entities.all fun (_, idx) => z.range.contains idx
+      z.entities.all fun rec => z.range.contains rec.idx
 
 /-- True iff live zone ranges stay pairwise disjoint after a split -
     `maybeSplitZone` must not silently create overlapping authority. -/

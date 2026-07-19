@@ -73,7 +73,12 @@ def ZoneWorld.authorityFor (w : ZoneWorld) (pos : Pos3) : Option Id :=
     correctness benefit - a real algorithmic cost this repo's own load
     testing (fanout_load_client) measured directly (super-quadratic
     growth well past what O(N^2) target construction alone would predict,
-    since this ran once per publisher per tick). -/
+    since this ran once per publisher per tick).
+
+    Still blanket "everyone in reach hears everyone" visibility, not real
+    ghost-expansion interest yet (see `EntityRecord`'s velocity fields,
+    added but not yet consumed here) - that replacement is later, separate
+    work, not silently assumed solved by adding the fields alone. -/
 def ZoneWorld.targetsForIndex (w : ZoneWorld) (publisherConnId : UInt64) (idx : UInt64) : Array UInt64 := Id.run do
   let live := w.liveZones
   let plain := live.map (·.2)
@@ -84,28 +89,30 @@ def ZoneWorld.targetsForIndex (w : ZoneWorld) (publisherConnId : UInt64) (idx : 
     let mut result : Array UInt64 := #[]
     for i in reach do
       if h : i < plain.size then
-        for (connId, _) in plain[i].entities do
-          if connId != publisherConnId then
-            result := result.push connId
+        for rec in plain[i].entities do
+          if rec.connId != publisherConnId then
+            result := result.push rec.connId
     return result
 
 def ZoneWorld.targetsFor (w : ZoneWorld) (publisherConnId : UInt64) (pos : Pos3) : Array UInt64 :=
   w.targetsForIndex publisherConnId (hilbert3D w.bits pos)
 
-/-- Moves (or first-places) `connId`'s entity to curve index `idx`: removes
-    it from whichever zone it was previously authoritative in (a linear
-    scan over live zones' entity lists - fine at this scale, matching
-    `Room.unsub`'s own linear `filter`), then adds it to the zone now
-    authoritative for `idx`, if any. This is the migration operation
+/-- Moves (or first-places) `connId`'s entity to curve index `idx` with the
+    given velocity magnitude per axis (μm/tick, absolute value - see
+    `EntityRecord`): removes it from whichever zone it was previously
+    authoritative in (a linear scan over live zones' entity lists - fine
+    at this scale, matching `Room.unsub`'s own linear `filter`), then adds
+    it to the zone now authoritative for `idx`, if any, carrying the new
+    velocity forward. This is the migration operation
     (`AuthorityInterest.lean`'s "authority transfer") - a first version
     with no hysteresis threshold (`AuthorityInterest.lean`'s
     `hysteresisThreshold`), so an entity oscillating exactly on a zone
     boundary can migrate every call; that refinement is later, separate
     work, not silently assumed solved here. -/
-def ZoneWorld.moveEntityToIndex (w : ZoneWorld) (connId : UInt64) (idx : UInt64) : ZoneWorld := Id.run do
+def ZoneWorld.moveEntityToIndexV (w : ZoneWorld) (connId idx vx vy vz : UInt64) : ZoneWorld := Id.run do
   let mut zones := w.zones
   for (id, zone) in w.liveZones do
-    if zone.entities.any (·.1 == connId) then
+    if zone.entities.any (·.connId == connId) then
       zones := zones.update id (zone.unsub connId)
   let w := { w with zones := zones }
   match w.authorityForIndex idx with
@@ -113,7 +120,18 @@ def ZoneWorld.moveEntityToIndex (w : ZoneWorld) (connId : UInt64) (idx : UInt64)
   | some zoneId =>
     match w.zones.find zoneId with
     | none => return w
-    | some zone => return { w with zones := w.zones.update zoneId (zone.sub connId idx) }
+    | some zone =>
+      return { w with zones := w.zones.update zoneId (zone.sub { connId, idx, vx, vy, vz }) }
+
+/-- `moveEntityToIndexV` with zero velocity - the convenience entry point
+    for callers that don't track velocity (most of TestProps.lean's plain
+    authority/migration/split property tests, which exercise curve-index
+    placement logic independent of ghost expansion). -/
+def ZoneWorld.moveEntityToIndex (w : ZoneWorld) (connId : UInt64) (idx : UInt64) : ZoneWorld :=
+  w.moveEntityToIndexV connId idx 0 0 0
+
+def ZoneWorld.moveEntityV (w : ZoneWorld) (connId : UInt64) (pos : Pos3) (vx vy vz : UInt64) : ZoneWorld :=
+  w.moveEntityToIndexV connId (hilbert3D w.bits pos) vx vy vz
 
 def ZoneWorld.moveEntity (w : ZoneWorld) (connId : UInt64) (pos : Pos3) : ZoneWorld :=
   w.moveEntityToIndex connId (hilbert3D w.bits pos)
@@ -123,7 +141,7 @@ def ZoneWorld.moveEntity (w : ZoneWorld) (connId : UInt64) (pos : Pos3) : ZoneWo
 def ZoneWorld.removeEntity (w : ZoneWorld) (connId : UInt64) : ZoneWorld := Id.run do
   let mut zones := w.zones
   for (id, zone) in w.liveZones do
-    if zone.entities.any (·.1 == connId) then
+    if zone.entities.any (·.connId == connId) then
       zones := zones.update id (zone.unsub connId)
   return { w with zones := zones }
 
@@ -132,7 +150,7 @@ def ZoneWorld.removeEntity (w : ZoneWorld) (connId : UInt64) : ZoneWorld := Id.r
     just a count per child, no entity data moved yet (this is the input
     `splitIsCheaper` needs before committing to an actual split). -/
 def childPopulationsFor (zone : Zone) (children : Array ZoneRange) : Array Nat :=
-  children.map fun c => (zone.entities.filter fun (_, idx) => c.contains idx).size
+  children.map fun c => (zone.entities.filter fun rec => c.contains rec.idx).size
 
 /-- AV1-style split (ADR 0008/0009, Partition.lean): if splitting `zoneId`
     into its 8 real octree children (`octreeChildren`, along genuine octant
@@ -167,15 +185,15 @@ def ZoneWorld.maybeSplitZone (w : ZoneWorld) (zoneId : Id) : ZoneWorld :=
             | none => return w
             | some (w', cid) => w := w'; childIds := childIds.push cid
           let mut zones := w.zones
-          for (connId, idx) in zone.entities do
+          for rec in zone.entities do
             for i in List.range children.size do
-              if (children[i]!).contains idx then
+              if (children[i]!).contains rec.idx then
                 match childIds[i]? with
                 | none => pure ()
                 | some cid =>
                   match zones.find cid with
                   | none => pure ()
-                  | some target => zones := zones.update cid (target.sub connId idx)
+                  | some target => zones := zones.update cid (target.sub rec)
           return { w with zones := zones }
 
 /-- The range one octree level up from `r` (the parent cell `r` would be one
@@ -213,7 +231,7 @@ def ZoneWorld.maybeMergeSiblings (w : ZoneWorld) (zoneId : Id) : ZoneWorld :=
       | some children =>
         Id.run do
           let mut siblingIds : Array Id := #[]
-          let mut allEntities : Array (UInt64 × UInt64) := #[]
+          let mut allEntities : Array EntityRecord := #[]
           let mut totalPop := 0
           for c in children do
             match w.authorityForIndex c.start with
@@ -229,7 +247,7 @@ def ZoneWorld.maybeMergeSiblings (w : ZoneWorld) (zoneId : Id) : ZoneWorld :=
                   allEntities := allEntities ++ szone.entities
                   totalPop := totalPop + szone.entities.size
           let childPops := children.map fun c =>
-            (allEntities.filter fun (_, idx) => c.contains idx).size
+            (allEntities.filter fun rec => c.contains rec.idx).size
           if !splitIsCheaper totalPop childPops then return w
           else
             let mut w := w
@@ -243,8 +261,8 @@ def ZoneWorld.maybeMergeSiblings (w : ZoneWorld) (zoneId : Id) : ZoneWorld :=
               | none => return { w' with zones := zones }
               | some pzone =>
                 let mut pzone := pzone
-                for (connId, idx) in allEntities do
-                  pzone := pzone.sub connId idx
+                for rec in allEntities do
+                  pzone := pzone.sub rec
                 zones := zones.update pid pzone
                 return { w' with zones := zones }
 

@@ -37,6 +37,19 @@
 //     Worker role. Runs exactly one simulated player (runOnePlayer,
 //     fanout_load_client.actor.cpp) and exits 0 if it completed every ZPB
 //     tick before the deadline, 1 otherwise.
+//
+//   fanout_load_client --multi <port> <playerCount> <ticks> <deadlineSeconds>
+//     Multi-connection role (task M3, docs/decisions/... critical-path
+//     work on "maximum players on this computer"). Runs playerCount
+//     simulated players multiplexed through ONE picoquic_quic_t and ONE
+//     socket in this ONE process (runManyPlayers,
+//     fanout_load_client.actor.cpp), not one OS process each - avoids the
+//     one-process-per-player coordinator's ephemeral-UDP-port ceiling
+//     (this machine: 16384 ports total, system-wide) so a load test can
+//     find picoquic_fanout_server's own real capacity instead of the load
+//     generator's. Prints "succeeded <n>/<playerCount>" and exits 0 if
+//     n == playerCount, 1 otherwise. Standalone - not yet wired into the
+//     ramp coordinator above (a separate, later integration).
 
 #include "flow/Platform.h"
 #include "flow/TLSConfig.h"
@@ -67,6 +80,8 @@ extern char** environ;
 
 Future<bool> runOnePlayer(int const& playerId, int const& ticks, uint16_t const& serverPort,
                            double const& deadlineSeconds);
+Future<int> runManyPlayers(int const& playerCount, int const& ticks, uint16_t const& serverPort,
+                            double const& deadlineSeconds);
 
 namespace {
 
@@ -107,6 +122,34 @@ void runWorker(uint16_t port, int playerId, int ticks, double deadlineSeconds) {
 	// anyway since a worker spawned potentially thousands of times per
 	// ramp has no reason to pay for teardown it doesn't need.
 	_exit(g_workerExitCode);
+}
+
+namespace {
+
+int g_multiSucceeded = 0;
+int g_multiTotal = 0;
+
+} // namespace
+
+ACTOR Future<Void> runMultiThenStop(int playerCount, int ticks, uint16_t serverPort, double deadlineSeconds) {
+	state Future<int> result = runManyPlayers(playerCount, ticks, serverPort, deadlineSeconds);
+	wait(ready(result));
+	g_multiSucceeded = result.isError() ? 0 : result.get();
+	g_multiTotal = playerCount;
+	g_network->stop();
+	return Void();
+}
+
+void runMulti(uint16_t port, int playerCount, int ticks, double deadlineSeconds) {
+	platformInit();
+	Error::init();
+	g_network = newNet2(TLSConfig());
+	openTraceFile({}, 10 << 20, 100 << 20, ".", "fanout_load_client_multi");
+	Future<Void> done = runMultiThenStop(playerCount, ticks, port, deadlineSeconds);
+	g_network->run();
+	printf("succeeded %d/%d\n", g_multiSucceeded, g_multiTotal);
+	fflush(stdout);
+	_exit(g_multiSucceeded == g_multiTotal ? 0 : 1);
 }
 
 // --- Coordinator: process spawn/wait, no Flow actors needed - this role
@@ -385,6 +428,14 @@ int main(int argc, char** argv) {
 		int ticks = argc > 4 ? atoi(argv[4]) : 5;
 		double deadlineSeconds = argc > 5 ? atof(argv[5]) : 10.0;
 		runWorker(port, playerId, ticks, deadlineSeconds); // _exit()s internally
+	}
+
+	if (argc > 1 && std::string(argv[1]) == "--multi") {
+		uint16_t port = argc > 2 ? static_cast<uint16_t>(atoi(argv[2])) : 4433;
+		int playerCount = argc > 3 ? atoi(argv[3]) : 100;
+		int ticks = argc > 4 ? atoi(argv[4]) : 5;
+		double deadlineSeconds = argc > 5 ? atof(argv[5]) : 10.0;
+		runMulti(port, playerCount, ticks, deadlineSeconds); // _exit()s internally
 	}
 
 	uint16_t serverPort = argc > 1 ? static_cast<uint16_t>(atoi(argv[1])) : 4433;

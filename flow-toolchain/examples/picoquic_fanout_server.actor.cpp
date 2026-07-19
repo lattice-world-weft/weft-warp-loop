@@ -452,8 +452,15 @@ ACTOR Future<Void> fanoutServer(uint16_t port, std::string certPath, std::string
 	state Reference<IUDPSocket> socket = wait(INetworkConnections::net()->createUDPSocket(false));
 	socket->bind(NetworkAddress(IPAddress(0u), port, true, false));
 
-	state std::array<uint8_t, 2048> recvBuf;
-	state std::array<uint8_t, 2048> sendBuf;
+	// PICOQUIC_MAX_PACKET_SIZE (picoquic.h), not a round number larger than
+	// it: picoquic's own internal packet buffers are fixed at exactly this
+	// size, so a larger receive capacity here lets an over-length datagram
+	// overflow picoquic's internal decrypt buffer - a real heap-corruption
+	// bug found (via fanout_load_client's --multi mode, which shares this
+	// same buffer sizing) with lldb, trapped inside
+	// picoquic_remove_header_protection_inner.
+	state std::array<uint8_t, PICOQUIC_MAX_PACKET_SIZE> recvBuf;
+	state std::array<uint8_t, PICOQUIC_MAX_PACKET_SIZE> sendBuf;
 
 	// Exactly one receiveFrom() stays outstanding at a time: recreating it every
 	// loop iteration (even when the timer branch below wins the race) would

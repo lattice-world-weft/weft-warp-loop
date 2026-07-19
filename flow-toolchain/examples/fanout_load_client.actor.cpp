@@ -216,8 +216,16 @@ ACTOR Future<bool> runOnePlayer(int playerId, int ticks, uint16_t serverPort, do
 	// aioquic client already does - fixed it.
 	socket->bind(NetworkAddress(IPAddress(0x7F000001u), 0, true, false));
 
-	state std::array<uint8_t, 2048> recvBuf;
-	state std::array<uint8_t, 2048> sendBuf;
+	// PICOQUIC_MAX_PACKET_SIZE, not some larger round number: picoquic's own
+	// internal packet buffers (e.g. picoquic_stream_data_node_t::data) are
+	// fixed at exactly this size, so advertising more receive capacity than
+	// that lets an over-length datagram overflow picoquic's internal decrypt
+	// buffer - a real heap-corruption bug found via lldb (crash trapped
+	// inside picoquic_remove_header_protection_inner, called from
+	// picoquic_incoming_packet, only manifesting once enough connections/
+	// traffic made an over-1536-byte packet likely).
+	state std::array<uint8_t, PICOQUIC_MAX_PACKET_SIZE> recvBuf;
+	state std::array<uint8_t, PICOQUIC_MAX_PACKET_SIZE> sendBuf;
 	state NetworkAddress sender;
 	state Future<int> recvF = socket->receiveFrom(recvBuf.data(), recvBuf.data() + recvBuf.size(), &sender);
 	state double startTime = now();
@@ -297,13 +305,265 @@ ACTOR Future<bool> runOnePlayer(int playerId, int ticks, uint16_t serverPort, do
 				break;
 			}
 			state NetworkAddress peer = sockaddrToNetworkAddress(peerAddr);
-			int sent = wait(socket->sendTo(sendBuf.data(), sendBuf.data() + sendLength, peer));
-			(void)sent;
+			state Future<int> sendF = socket->sendTo(sendBuf.data(), sendBuf.data() + sendLength, peer);
+			wait(ready(sendF));
+			if (sendF.isError()) {
+				TraceEvent(SevWarn, "LoadClientSendError").error(sendF.getError());
+			}
 		}
 	}
 
 	bool succeeded = player.state == PlayerState::Done;
+
+	// A graceful close before the worker process exits (runWorker calls
+	// _exit() right after this returns, with no other opportunity to
+	// notify the peer) was tried here and measured to make scaling
+	// noticeably WORSE, not better: round3->4 elapsed-time ratio rose to
+	// 10.7x (vs 4.6x without it), and the ramp failed a full round
+	// earlier. A per-worker blocking close/drain sequence (up to 4
+	// sequential prepare+wait(ready(sendF)) cycles) adds real serial
+	// latency that compounds across every worker in a round as round
+	// size grows - the fix for stale-entity accumulation this was meant
+	// to be cost more than whatever it saved. Left as a plain
+	// picoquic_delete_cnx (no wire-level close attempt) until a
+	// genuinely cheap way to notify the server exists - the server's own
+	// idle timeout already reclaims the entity eventually, just not
+	// promptly.
 	picoquic_delete_cnx(cnx);
+	picoquic_free(quic);
+	return succeeded;
+}
+
+// Many simulated players multiplexed through ONE picoquic_quic_t and ONE
+// Flow UDP socket in this ONE process - not many OS processes. This is
+// the design runOnePlayer's own header comment describes as abandoned
+// for being unreliable at high burst counts (all connections sharing one
+// local 4-tuple triggered a storm of Windows ICMP-port-unreachable/
+// connection-reset notifications) - but that diagnosis turned out to be
+// a fixable client-side reliability bug, not a fundamental flaw: binding
+// to 127.0.0.1 instead of the 0.0.0.0 wildcard, and treating
+// connection_failed as routine instead of fatal (both already applied in
+// runOnePlayer above), were enough. It never crashed the process the way
+// sharing multiple independent picoquic_quic_t *contexts* did (3+ in one
+// process corrupts memory in the vendored picoquic/mbedtls stack) -
+// multiple *connections* in one context was always safe, just unreliable
+// until these fixes landed.
+//
+// This exists because the one-process-per-player design (CockroachDB-
+// style, runOnePlayer/the coordinator) traded the multi-context crash for
+// a different ceiling: this machine's ephemeral UDP port range (49152-
+// 65535, 16384 ports total, shared system-wide) hard-caps how many
+// worker processes can each bind their own ephemeral port. That ceiling
+// belongs to the load-generation *methodology*, not to
+// picoquic_fanout_server - measuring the server's own real capacity on
+// this machine means using a load generator that doesn't hit a different
+// limit first. Many players sharing one socket needs only one ephemeral
+// port for however many are hosted in this process.
+ACTOR Future<int> runManyPlayers(int playerCount, int ticks, uint16_t serverPort, double deadlineSeconds) {
+	state std::vector<PlayerCtx> players(playerCount);
+	state std::array<uint8_t, PICOQUIC_RESET_SECRET_SIZE> resetSeed;
+	resetSeed.fill(0x5a);
+
+	state picoquic_quic_t* quic = picoquic_create(static_cast<uint32_t>(playerCount) + 4,
+	                                               nullptr,
+	                                               nullptr,
+	                                               nullptr,
+	                                               "fanout-demo",
+	                                               loadClientStreamCallback,
+	                                               nullptr,
+	                                               nullptr,
+	                                               nullptr,
+	                                               resetSeed.data(),
+	                                               picoquic_current_time(),
+	                                               nullptr,
+	                                               nullptr,
+	                                               nullptr,
+	                                               0);
+	if (quic == nullptr) {
+		throw internal_error();
+	}
+
+	sockaddr_in serverAddr;
+	memset(&serverAddr, 0, sizeof(serverAddr));
+	serverAddr.sin_family = AF_INET;
+	serverAddr.sin_port = htons(serverPort);
+	inet_pton(AF_INET, "127.0.0.1", &serverAddr.sin_addr);
+
+	state std::vector<picoquic_cnx_t*> cnxs(playerCount, nullptr);
+	for (int i = 0; i < playerCount; i++) {
+		players[i].playerId = i;
+		players[i].ticksRemaining = ticks;
+		picoquic_cnx_t* cnx = picoquic_create_cnx(quic,
+		                                           picoquic_null_connection_id,
+		                                           picoquic_null_connection_id,
+		                                           reinterpret_cast<sockaddr*>(&serverAddr),
+		                                           picoquic_current_time(),
+		                                           0,
+		                                           "fanout-load-client",
+		                                           "fanout-demo",
+		                                           1);
+		if (cnx == nullptr) {
+			continue;
+		}
+		picoquic_set_callback(cnx, loadClientStreamCallback, &players[i]);
+		if (picoquic_start_client_cnx(cnx) == 0) {
+			cnxs[i] = cnx;
+		}
+	}
+
+	state Reference<IUDPSocket> socket = wait(INetworkConnections::net()->createUDPSocket(false));
+	socket->bind(NetworkAddress(IPAddress(0x7F000001u), 0, true, false));
+
+	// PICOQUIC_MAX_PACKET_SIZE, not some larger round number: picoquic's own
+	// internal packet buffers (e.g. picoquic_stream_data_node_t::data) are
+	// fixed at exactly this size, so advertising more receive capacity than
+	// that lets an over-length datagram overflow picoquic's internal decrypt
+	// buffer - a real heap-corruption bug found via lldb (crash trapped
+	// inside picoquic_remove_header_protection_inner, called from
+	// picoquic_incoming_packet, only manifesting once enough connections/
+	// traffic made an over-1536-byte packet likely).
+	state std::array<uint8_t, PICOQUIC_MAX_PACKET_SIZE> recvBuf;
+	state std::array<uint8_t, PICOQUIC_MAX_PACKET_SIZE> sendBuf;
+	state NetworkAddress sender;
+	state Future<int> recvF = socket->receiveFrom(recvBuf.data(), recvBuf.data() + recvBuf.size(), &sender);
+	state double startTime = now();
+
+	loop {
+		bool allDone = true;
+		for (const PlayerCtx& p : players) {
+			if (p.state != PlayerState::Done && p.state != PlayerState::Failed) {
+				allDone = false;
+				break;
+			}
+		}
+		if (allDone || now() - startTime > deadlineSeconds) {
+			break;
+		}
+
+		// Drain everything picoquic already has ready to send BEFORE
+		// deciding whether to wait at all: this is what actually clears
+		// the "something due now" condition, so checking
+		// picoquic_get_next_wake_delay before draining could see a stale
+		// <=0 result and spin the outer loop with no real wait between
+		// iterations - previously papered over with a delay(0.0)/delay-
+		// floor, both of which either leaked (unbounded re-listen on a
+		// still-pending recvF racing an instantly-ready timer) or, once
+		// the wait was removed outright without draining first, busy-
+		// spun with no yield point at all (a fast stack overflow, no
+		// ASan report). Draining first means the only remaining "nothing
+		// to do right now" case is genuinely nothing to do, so a wait is
+		// always warranted afterward.
+		loop {
+			size_t sendLength = 0;
+			sockaddr_storage peerAddr;
+			sockaddr_storage localAddr;
+			int ifIndex = 0;
+			picoquic_connection_id_t logCid;
+			picoquic_cnx_t* lastCnx = nullptr;
+			int ret = picoquic_prepare_next_packet(quic,
+			                                        static_cast<uint64_t>(now() * 1e6),
+			                                        sendBuf.data(),
+			                                        sendBuf.size(),
+			                                        &sendLength,
+			                                        &peerAddr,
+			                                        &localAddr,
+			                                        &ifIndex,
+			                                        &logCid,
+			                                        &lastCnx);
+			if (ret != 0 || sendLength == 0) {
+				break;
+			}
+			state NetworkAddress peer = sockaddrToNetworkAddress(peerAddr);
+			state Future<int> sendF = socket->sendTo(sendBuf.data(), sendBuf.data() + sendLength, peer);
+			wait(ready(sendF));
+			if (sendF.isError()) {
+				TraceEvent(SevWarn, "LoadClientMultiSendError").error(sendF.getError());
+			}
+		}
+
+		state uint64_t currentTime = static_cast<uint64_t>(now() * 1e6);
+		int64_t wakeDelayUs = picoquic_get_next_wake_delay(quic, currentTime, 1000000);
+
+		if (wakeDelayUs > 0) {
+			// A real future wake time - race it against recvF exactly
+			// once, so recvF gets exactly one live listener at a time.
+			double wakeDelayS = static_cast<double>(wakeDelayUs) / 1e6;
+			choose {
+				when(wait(ready(recvF))) {
+					if (recvF.isError()) {
+						recvF = socket->receiveFrom(recvBuf.data(), recvBuf.data() + recvBuf.size(), &sender);
+					} else {
+						int n = recvF.get();
+						sockaddr_in addrFrom;
+						memset(&addrFrom, 0, sizeof(addrFrom));
+						addrFrom.sin_family = AF_INET;
+						addrFrom.sin_port = htons(sender.port);
+						addrFrom.sin_addr.s_addr = htonl(sender.ip.isV4() ? sender.ip.toV4() : 0u);
+
+						sockaddr_in addrTo;
+						memset(&addrTo, 0, sizeof(addrTo));
+						addrTo.sin_family = AF_INET;
+
+						picoquic_incoming_packet(quic,
+						                          recvBuf.data(),
+						                          static_cast<size_t>(n),
+						                          reinterpret_cast<sockaddr*>(&addrFrom),
+						                          reinterpret_cast<sockaddr*>(&addrTo),
+						                          0,
+						                          0,
+						                          static_cast<uint64_t>(now() * 1e6));
+						recvF = socket->receiveFrom(recvBuf.data(), recvBuf.data() + recvBuf.size(), &sender);
+					}
+				}
+				when(wait(delay(wakeDelayS))) {
+				}
+			}
+		} else {
+			// Drained everything and picoquic still reports nothing due
+			// in the future (e.g. all connections are simply idle,
+			// waiting on the peer) - the only remaining real event source
+			// is recvF itself, waited on directly with no fabricated
+			// timer, so this always yields to the reactor instead of
+			// spinning.
+			wait(ready(recvF));
+			if (recvF.isError()) {
+				recvF = socket->receiveFrom(recvBuf.data(), recvBuf.data() + recvBuf.size(), &sender);
+			} else {
+				int n = recvF.get();
+				sockaddr_in addrFrom;
+				memset(&addrFrom, 0, sizeof(addrFrom));
+				addrFrom.sin_family = AF_INET;
+				addrFrom.sin_port = htons(sender.port);
+				addrFrom.sin_addr.s_addr = htonl(sender.ip.isV4() ? sender.ip.toV4() : 0u);
+
+				sockaddr_in addrTo;
+				memset(&addrTo, 0, sizeof(addrTo));
+				addrTo.sin_family = AF_INET;
+
+				picoquic_incoming_packet(quic,
+				                          recvBuf.data(),
+				                          static_cast<size_t>(n),
+				                          reinterpret_cast<sockaddr*>(&addrFrom),
+				                          reinterpret_cast<sockaddr*>(&addrTo),
+				                          0,
+				                          0,
+				                          static_cast<uint64_t>(now() * 1e6));
+				recvF = socket->receiveFrom(recvBuf.data(), recvBuf.data() + recvBuf.size(), &sender);
+			}
+		}
+	}
+
+	state int succeeded = 0;
+	for (const PlayerCtx& p : players) {
+		if (p.state == PlayerState::Done) {
+			succeeded++;
+		}
+	}
+	for (picoquic_cnx_t* cnx : cnxs) {
+		if (cnx != nullptr) {
+			picoquic_delete_cnx(cnx);
+		}
+	}
 	picoquic_free(quic);
 	return succeeded;
 }

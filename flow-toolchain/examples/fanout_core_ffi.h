@@ -28,6 +28,14 @@ lean_object* fanout_free_room(uint64_t room_id);
 lean_object* fanout_sub(uint64_t room_id, uint64_t conn_id);
 lean_object* fanout_unsub(uint64_t room_id, uint64_t conn_id);
 lean_object* fanout_pub_targets(uint64_t room_id, uint64_t publisher_conn_id);
+
+// Zone-authority/interest dispatch (ADR 0008, Fanoutcore/Zone.lean +
+// ZoneDispatch.lean) - additive to the Room/SUB/PUB exports above.
+lean_object* fanout_zone_alloc(uint64_t start_idx, uint64_t stop_idx);
+lean_object* fanout_zone_free(uint64_t zone_id);
+lean_object* fanout_entity_move(uint64_t conn_id, int64_t x, int64_t y, int64_t z);
+lean_object* fanout_entity_remove(uint64_t conn_id);
+lean_object* fanout_zone_targets(uint64_t publisher_conn_id, int64_t x, int64_t y, int64_t z);
 }
 
 constexpr uint64_t FANOUT_CORE_SENTINEL = 0xFFFFFFFFFFFFFFFFULL;

@@ -12,8 +12,22 @@
 // Wire protocol, one line per stream:
 //   SUB <topic>\n
 //   PUB <topic>\n<100-byte lean-entity-packet payload>
+//   ZPB <x> <y> <z>\n<100-byte lean-entity-packet payload>
 // A subscriber receives each PUB payload verbatim, pushed back on the same
 // bidirectional stream it sent its SUB on.
+//
+// ZPB ("zone publish", ADR 0008) is the Hilbert-curve zone-authority/
+// interest alternative to topic-based SUB/PUB: no topic, no prior
+// subscription - the position IS the routing key. Each ZPB moves the
+// sender's entity to (x, y, z) (Fanoutcore/ZoneDispatch.lean's migration:
+// out of whichever zone it was in, into whichever zone is now
+// authoritative for that position) and fans the payload out to that
+// zone's authority members plus curve-adjacent interest members
+// (`fanout_zone_targets`) - not a flat per-topic broadcast. Zones
+// themselves aren't allocated over the wire yet (no verb for it) - this
+// increment proves the dispatch path end to end against zones a test
+// harness allocates directly via the FFI, wire-level zone provisioning is
+// later, separate work.
 
 #include "fanout_core_ffi.h"
 #include "sketch_core_ffi.h"
@@ -28,6 +42,7 @@
 #include "picoquic.h"
 
 #include <array>
+#include <charconv>
 #include <cstring>
 #include <unordered_map>
 #include <string>
@@ -52,22 +67,43 @@ uint64_t connIdOf(picoquic_cnx_t* cnx) {
 	return reinterpret_cast<uint64_t>(cnx);
 }
 
+// Parses "x y z" (three space-separated signed decimal integers, the ZPB
+// header's payload) via non-throwing std::from_chars - a malformed header
+// from one connection reports a plain parse failure rather than risking
+// any exception near this codebase's core dispatch path.
+bool parseZpbCoords(const std::string& rest, int64_t& x, int64_t& y, int64_t& z) {
+	const char* begin = rest.data();
+	const char* end = rest.data() + rest.size();
+	auto r1 = std::from_chars(begin, end, x);
+	if (r1.ec != std::errc() || r1.ptr >= end || *r1.ptr != ' ') {
+		return false;
+	}
+	auto r2 = std::from_chars(r1.ptr + 1, end, y);
+	if (r2.ec != std::errc() || r2.ptr >= end || *r2.ptr != ' ') {
+		return false;
+	}
+	auto r3 = std::from_chars(r2.ptr + 1, end, z);
+	return r3.ec == std::errc();
+}
+
 NetworkAddress sockaddrToNetworkAddress(const sockaddr_storage& addr) {
 	const sockaddr_in* in4 = reinterpret_cast<const sockaddr_in*>(&addr);
 	return NetworkAddress(IPAddress(ntohl(in4->sin_addr.s_addr)), ntohs(in4->sin_port), true, false);
 }
 
 // Per-stream parse state: buffers bytes until the "SUB <topic>\n",
-// "PUB <topic>\n", or "SKB <topic>\n" header line is complete, then (for
-// PUB) buffers the fixed-size payload, or (for SKB) parses length-prefixed
-// CSP1 sketch frames.
+// "PUB <topic>\n", "SKB <topic>\n", or "ZPB <x> <y> <z>\n" header line is
+// complete, then (for PUB/ZPB) buffers the fixed-size payload, or (for
+// SKB) parses length-prefixed CSP1 sketch frames.
 struct StreamState {
 	std::string buf;
 	bool headerParsed = false;
 	bool isPub = false;
 	bool isSketch = false;
+	bool isZonePub = false;
 	std::string topic;
 	uint64_t roomId = 0;
+	int64_t x = 0, y = 0, z = 0;
 };
 
 // A sketch frame is [len u32 LE][len bytes of CSP1]. Cap len well above any
@@ -198,13 +234,54 @@ void handlePub(BridgeState& state, picoquic_cnx_t* cnx, const std::string& topic
 	lean_dec_ref(res);
 }
 
+// Registers this connection's delivery stream immediately on parsing a
+// ZPB header - mirrors handleSub's own immediate registration - so it can
+// receive zone-fanout deliveries on this same stream even before its
+// first payload arrives (a ZPB stream has no separate "subscribe" step;
+// the first payload's move is what actually places it into a zone).
+void handleZoneSub(BridgeState& state, picoquic_cnx_t* cnx, uint64_t streamId) {
+	state.delivery[connIdOf(cnx)] = { cnx, streamId };
+}
+
+// Moves the publisher's entity to (x, y, z) (Fanoutcore/ZoneDispatch.lean:
+// out of whichever zone it was in, into whichever zone is now
+// authoritative there), then relays payload to that zone's authority
+// members plus curve-adjacent interest members (fanout_zone_targets) -
+// the ADR 0008 rule, not a flat per-topic broadcast.
+void handleZonePub(BridgeState& state, picoquic_cnx_t* cnx, int64_t x, int64_t y, int64_t z, const uint8_t* payload,
+                    size_t payloadLen) {
+	uint64_t connId = connIdOf(cnx);
+	lean_object* moveRes = fanout_entity_move(connId, x, y, z);
+	lean_dec_ref(moveRes);
+
+	lean_object* res = fanout_zone_targets(connId, x, y, z);
+	if (!lean_io_result_is_ok(res)) {
+		lean_dec_ref(res);
+		return;
+	}
+	lean_object* arr = lean_io_result_get_value(res);
+	size_t n = lean_array_size(arr);
+	for (size_t i = 0; i < n; i++) {
+		uint64_t targetConnId = lean_unbox_uint64(lean_array_get_core(arr, i));
+		auto it = state.delivery.find(targetConnId);
+		if (it == state.delivery.end()) {
+			continue; // target's connection/stream is gone; skip it.
+		}
+		picoquic_add_to_stream(it->second.first, it->second.second, payload, payloadLen, 0);
+	}
+	lean_dec_ref(res);
+}
+
 void cleanupStream(BridgeState& state, picoquic_cnx_t* cnx, uint64_t streamId, const StreamState& streamState) {
 	uint64_t connId = connIdOf(cnx);
 	auto it = state.delivery.find(connId);
 	if (it != state.delivery.end() && it->second.first == cnx && it->second.second == streamId) {
 		state.delivery.erase(it);
 	}
-	if (streamState.headerParsed && !streamState.isPub) {
+	if (streamState.isZonePub) {
+		lean_object* res = fanout_entity_remove(connId);
+		lean_dec_ref(res);
+	} else if (streamState.headerParsed && !streamState.isPub) {
 		auto roomIt = state.topicToRoom.find(streamState.topic);
 		if (roomIt != state.topicToRoom.end()) {
 			lean_object* res = fanout_unsub(roomIt->second, connId);
@@ -239,6 +316,12 @@ void pumpStream(BridgeState& state, picoquic_cnx_t* cnx, uint64_t streamId, Stre
 			} else if (verb == "SKB") {
 				streamState.isSketch = true;
 				handleSketchSub(state, cnx, streamId, streamState);
+			} else if (verb == "ZPB") {
+				if (!parseZpbCoords(streamState.topic, streamState.x, streamState.y, streamState.z)) {
+					return; // malformed "x y z"; stop parsing this stream.
+				}
+				streamState.isZonePub = true;
+				handleZoneSub(state, cnx, streamId);
 			} else {
 				return; // unknown verb; stop parsing this stream.
 			}
@@ -267,6 +350,17 @@ void pumpStream(BridgeState& state, picoquic_cnx_t* cnx, uint64_t streamId, Stre
 			          reinterpret_cast<const uint8_t*>(streamState.buf.data()), kEntityPacketSize);
 			streamState.buf.erase(0, kEntityPacketSize);
 			// One PUB payload per stream in this protocol; wait for a fresh header.
+			streamState.headerParsed = false;
+		} else if (streamState.isZonePub) {
+			if (streamState.buf.size() < kEntityPacketSize) {
+				return;
+			}
+			handleZonePub(state, cnx, streamState.x, streamState.y, streamState.z,
+			              reinterpret_cast<const uint8_t*>(streamState.buf.data()), kEntityPacketSize);
+			streamState.buf.erase(0, kEntityPacketSize);
+			// One ZPB payload per header, matching PUB - a fresh "ZPB x y z\n"
+			// header precedes each tick's payload, since position moves
+			// between ticks.
 			streamState.headerParsed = false;
 		} else {
 			return; // SUB stream: nothing further to parse.

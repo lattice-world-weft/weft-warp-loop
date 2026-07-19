@@ -39,4 +39,21 @@ void fanoutCoreInitialize(uint32_t roomCapacity) {
 		abort();
 	}
 	lean_dec_ref(res);
+
+	// One default zone spanning the whole Hilbert range: real gossip-
+	// learned zone partitioning (ADR 0008) is later, separate work
+	// (task E-GOSSIP) - until it exists, every ZPB'd entity lands in this
+	// one zone regardless of position, which is enough to prove the
+	// zone-authority/interest dispatch path end to end. `stop` one short
+	// of the full uint64 range - ZoneRange::contains is half-open
+	// ([start, stop)), and 0xFFFF...FFFF is a plain value here, not
+	// FANOUT_CORE_SENTINEL (that sentinel is only meaningful as a
+	// *return* value from alloc calls, not as data crossing this FFI).
+	res = fanout_zone_alloc(0, 0xFFFFFFFFFFFFFFFFULL);
+	if (!lean_io_result_is_ok(res)) {
+		lean_io_result_show_error(res);
+		fprintf(stderr, "fanout-core: fanout_zone_alloc (default zone) failed\n");
+		abort();
+	}
+	lean_dec_ref(res);
 }

@@ -5,6 +5,7 @@
 #include "flow/TLSConfig.h"
 #include "flow/flow.h"
 #include "flow/network.h"
+#include "flow/genericactors.actor.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -17,13 +18,14 @@ Future<Void> rampMain(uint16_t const& serverPort, int const& ramp_start, int con
 
 // g_network->run() only drives whatever's scheduled; an exception inside
 // ramp that nothing else waits on would otherwise vanish silently, leaving
-// the reactor idling forever with nothing left pending - catch and report
-// it here so a real bug shows up as a message, not a silent hang.
+// the reactor idling forever with nothing left pending - report it here so
+// a real bug shows up as a message, not a silent hang. wait(ready(ramp)),
+// not wait(ramp): exceptions are illegal in this repo's flow actor code,
+// so ramp's error must never reach wait() and throw.
 ACTOR Future<Void> runThenStop(Future<Void> ramp) {
-	try {
-		wait(ramp);
-	} catch (Error& e) {
-		fprintf(stderr, "[fatal] ramp failed: %s (code %d)\n", e.what(), e.code());
+	wait(ready(ramp));
+	if (ramp.isError()) {
+		fprintf(stderr, "[fatal] ramp failed: %s\n", ramp.getError().what());
 		fflush(stderr);
 	}
 	g_network->stop();

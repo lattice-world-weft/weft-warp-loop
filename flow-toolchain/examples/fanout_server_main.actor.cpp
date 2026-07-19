@@ -7,6 +7,7 @@
 #include "flow/TLSConfig.h"
 #include "flow/flow.h"
 #include "flow/network.h"
+#include "flow/genericactors.actor.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -22,13 +23,14 @@ Future<Void> fanoutServer(uint16_t const& port, std::string const& certPath, std
 // stays alive (g_network->run() keeps spinning with nothing left
 // scheduled) but the UDP socket the actor owned is gone with it, so the
 // server looks alive to `Get-Process` while answering no traffic at all.
-// Catch and report instead of zombie-ing silently.
+// Report instead of zombie-ing silently. wait(ready(serverLoop)), not
+// wait(serverLoop): exceptions are illegal in this repo's flow actor code,
+// so serverLoop's error must never reach wait() and throw.
 ACTOR Future<Void> runServerOrReport(Future<Void> serverLoop) {
-	try {
-		wait(serverLoop);
-	} catch (Error& e) {
-		TraceEvent(SevError, "FanoutServerLoopFailed").error(e);
-		fprintf(stderr, "[fatal] fanoutServer failed: %s (code %d)\n", e.what(), e.code());
+	wait(ready(serverLoop));
+	if (serverLoop.isError()) {
+		TraceEvent(SevError, "FanoutServerLoopFailed").error(serverLoop.getError());
+		fprintf(stderr, "[fatal] fanoutServer failed: %s\n", serverLoop.getError().what());
 		fflush(stderr);
 		_exit(1);
 	}

@@ -29,6 +29,7 @@
 #include "flow/flow.h"
 #include "flow/IConnection.h"
 #include "flow/IUDPSocket.h"
+#include "flow/genericactors.actor.h"
 
 #include "picoquic.h"
 #include "picoquic_utils.h"
@@ -251,9 +252,30 @@ ACTOR Future<int> runLoadRound(int playerCount, std::string room, int ticks, uin
 		}
 		debugIter++;
 
-		try {
-			choose {
-				when(int n = wait(recvF)) {
+		choose {
+			// wait(ready(recvF)), not wait(recvF): exceptions are illegal in
+			// this repo's flow actor code, so a recv error must never reach
+			// wait() and throw - ready() (flow/genericactors.actor.h) always
+			// resolves once recvF does, success or error, and recvF's own
+			// isError()/getError() are plain non-throwing accessors.
+			when(wait(ready(recvF))) {
+				if (recvF.isError()) {
+					// Windows surfaces an ICMP port-unreachable for a prior
+					// datagram as a connection-reset on the next recv on
+					// that same local UDP socket, even though UDP itself is
+					// connectionless - the same quirk
+					// picoquic_fanout_server.actor.cpp and
+					// test_picoquic_fanout.py already work around on their
+					// own sides of this exact wire protocol. Harmless for a
+					// QUIC client that just keeps retransmitting: log and
+					// keep receiving.
+					if (debugIter < 20) {
+						fprintf(stderr, "[debug]   recv error (%s), retrying\n", recvF.getError().what());
+						fflush(stderr);
+					}
+					recvF = socket->receiveFrom(recvBuf.data(), recvBuf.data() + recvBuf.size(), &sender);
+				} else {
+					int n = recvF.get();
 					sockaddr_in addrFrom;
 					memset(&addrFrom, 0, sizeof(addrFrom));
 					addrFrom.sin_family = AF_INET;
@@ -274,25 +296,9 @@ ACTOR Future<int> runLoadRound(int playerCount, std::string room, int ticks, uin
 					                          static_cast<uint64_t>(now() * 1e6));
 					recvF = socket->receiveFrom(recvBuf.data(), recvBuf.data() + recvBuf.size(), &sender);
 				}
-				when(wait(delay(wakeDelayS))) {
-				}
 			}
-		} catch (Error& e) {
-			// Windows surfaces an ICMP port-unreachable for a prior datagram
-			// as a connection-reset on the next recv on that same local UDP
-			// socket, even though UDP itself is connectionless - the same
-			// quirk picoquic_fanout_server.actor.cpp and
-			// test_picoquic_fanout.py already work around on their own
-			// sides of this exact wire protocol. Harmless for a QUIC client
-			// that just keeps retransmitting: drop it and keep receiving.
-			if (e.code() != error_code_connection_failed) {
-				throw;
+			when(wait(delay(wakeDelayS))) {
 			}
-			if (debugIter < 20) {
-				fprintf(stderr, "[debug]   recv threw connection_failed (%s), retrying\n", e.what());
-				fflush(stderr);
-			}
-			recvF = socket->receiveFrom(recvBuf.data(), recvBuf.data() + recvBuf.size(), &sender);
 		}
 
 		loop {

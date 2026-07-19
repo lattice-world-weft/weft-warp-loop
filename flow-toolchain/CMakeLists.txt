@@ -285,6 +285,29 @@ target_compile_definitions(picoquic_vendor_test PRIVATE ${PICOQUIC_DEFS})
 target_include_directories(picoquic_vendor_test SYSTEM PRIVATE ${VENDOR_QUIC_INCLUDES})
 target_link_libraries(picoquic_vendor_test PRIVATE picoquic_vendored)
 
+# --- libriscv: the RISC-V sandbox substrate for ADR 0006's scripted-content
+# tier (docs/decisions/0006-libriscv-sandboxed-s7-lisp-over-native-janet.md).
+# Host-side library only here - no guest language (s7) is vendored or built
+# yet. RISCV_BINARY_TRANSLATION is off: it shells out to a system C compiler
+# at guest-load time to JIT-translate hot guest code, which is unneeded for
+# proving the vendored interpreter itself and is extra attack surface for a
+# sandbox whose whole point is a closed, host-controlled execution boundary.
+set(RISCV_32I OFF CACHE BOOL "" FORCE)
+set(RISCV_64I ON CACHE BOOL "" FORCE)
+set(RISCV_BINARY_TRANSLATION OFF CACHE BOOL "" FORCE)
+add_subdirectory(thirdparty/libriscv/lib)
+if(WIN32)
+  # windows.h's min/max macros shadow std::min/std::max in
+  # thirdparty/libriscv/lib/libriscv/win32/system_calls.cpp; upstream
+  # expects the consumer to opt out of them.
+  target_compile_definitions(riscv PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+endif()
+
+add_executable(libriscv_vendor_test examples/libriscv_vendor_test.cpp)
+target_compile_definitions(libriscv_vendor_test PRIVATE
+  LIBRISCV_VENDOR_TEST_GUEST_ELF="${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/libriscv/examples/embed/fib.rv64.elf")
+target_link_libraries(libriscv_vendor_test PRIVATE riscv)
+
 # --- fanout-core: Lean4 kernel (slot map + subscriber dispatch), compiled to a
 # static library via the Lean toolchain's own bundled clang/llvm-ar - the
 # generated C relies on Lean-specific attributes, so it's built with the same

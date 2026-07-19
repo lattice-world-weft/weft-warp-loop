@@ -17,3 +17,10 @@ socket-loop files (`sockloop.c`, `winsockloop.c`) are excluded on every
 platform here, not just Windows — see the README's "Architecture"
 section for why (`webtransportd` wants picoquic managing real sockets;
 this project doesn't).
+
+`libriscv/` is vendored, unmodified, via `git subtree`, from
+https://github.com/libriscv/libriscv, tag `v1.18`: BSD 3-Clause License
+(see `libriscv/LICENSE`). Host-side library only —
+`docs/decisions/0006-libriscv-sandboxed-s7-lisp-over-native-janet.md`
+records the RISC-V sandbox this repository builds toward; no guest
+language is vendored yet.

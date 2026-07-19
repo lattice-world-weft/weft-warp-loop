@@ -7,12 +7,20 @@ libc — not the freestanding RISC-V guest tier, which has no I/O by
 design and is the wrong place for anything network-facing like this.
 
 `taskweft-lite.scm` (this same directory) proves the HTN-planning style
-against this repo's own offline `plan/bootstrap-domain.json`.
-`artifacts-mmo-agent.scm` extends that same style to a live external API
-(ArtifactsMMO): fetch state, decide the next primitive action, execute
-it — with the *decision* made in Scheme and the actual HTTP call made
-through `s7_http_ffi.c`'s `(http-request method url bearer-token body)`,
-not by hand-issued shell commands.
+against this repo's own offline `plan/bootstrap-domain.json`, with
+methods as fixed data (subtask lists) — fine there, since that domain has
+one static answer. `artifacts-mmo-agent.scm` extends the same style to a
+live external API (ArtifactsMMO) using taskweft's actual RECTGTN
+discipline instead (`taskweft/taskweft`'s `docs/rectgtn.md`, the model
+behind the `mcp__taskweft__plan`/`replan` tools): a todo-list of goals,
+each decomposed lazily against *current* state — where the nearest
+tile for a resource is isn't knowable ahead of time, it's a live map
+query — with a real replan-on-failure loop (a cooldown-still-active
+error retries the same action after waiting; anything else re-decomposes
+the whole goal from fresh state). The decision runs in Scheme; the
+actual HTTP call goes through `s7_http_ffi.c`'s
+`(http-request method url bearer-token body)`, not hand-issued shell
+commands.
 
 ## Build (verified with llvm-mingw on Windows; adjust the compiler
 ## invocation for other hosts — nothing else here is Windows-specific)
@@ -41,10 +49,14 @@ ArtifactsMMO bearer token.
 ./s7agent artifacts-mmo-agent.scm
 ```
 
-Proven end to end against the live server: moves the character to a
-known `ash_tree` tile (found via `GET /maps?content_code=ash_tree`) and
-gathers it, waiting out the real per-action cooldown
-(`agent-sleep`/`remaining_seconds`) between the move and the gather.
+Proven end to end against the live server: runs the todo-list of four
+level-1 resources (`ash_tree`, `copper_rocks`, `sunflower_field`,
+`gudgeon_spot`), each goal decomposed into a live map query for the
+nearest tile, a move (skipped if already there), and a gather, waiting
+out the real per-action cooldown (`agent-sleep`/`remaining_seconds`)
+between actions. All four succeeded on the first attempt in the run
+this was verified against — no replans needed, but the retry/replan
+path is exercised by any 499 (cooldown) or other action error.
 
 ## Not done here
 

@@ -58,3 +58,17 @@ such constraint — it genuinely owns its own sockets via picoquic's own
 packet loop, verified against a live, independent HTTP/3 server
 (`api.artifactsmmo.com`) with real TLS 1.3 certificate validation before
 being wired into the build.
+
+`artifacts_mmo_h3_client` (`flow-toolchain/examples/artifacts_mmo_h3_client.c`)
+is this project's own code, not vendored — it fills the one gap
+`picoquicdemo_client`'s scenario mechanism has: a custom `authorization`
+header. It reuses `picoquic_create`/`_create_cnx`/`_start_client_cnx` and
+the unmodified `picoquic_demo_client_callback` (`picohttp/democlient.c`)
+for receiving, adding one new function that assembles a QPACK header
+frame the same way `h3zero_client_create_stream_request_ex` does, plus one
+extra literal-name field (`h3zero_qpack_literal_plus_name_encode`,
+already used elsewhere in `h3zero.c` for headers with no QPACK
+static-table entry) for the bearer token, and a real JSON body embedded
+as a DATA frame for POST. Verified against the live ArtifactsMMO API:
+authenticated `GET /characters/{name}` and `POST .../action/gathering`
+(a real, state-changing game action) both round-tripped correctly.

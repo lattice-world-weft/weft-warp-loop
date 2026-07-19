@@ -319,6 +319,36 @@ if(WIN32 AND NOT (CMAKE_CXX_COMPILER_ID STREQUAL "MSVC"))
 endif()
 target_link_libraries(picoquicdemo_client PRIVATE picoquic_vendored)
 
+# --- artifacts_mmo_h3_client: the vendored stack as a real AUTHENTICATED
+# HTTP/3 client - the gap picoquicdemo_client's scenario mechanism can't
+# fill (h3zero_client_create_stream_request_ex only ever encodes the
+# spec-required pseudo-headers, no custom "authorization" header; the same
+# gap found this session in v-sekai-multiplayer-fabric/fabric-godot-core's
+# http3_client.cpp, whose request()'s p_headers parameter is accepted but
+# stubbed out). artifacts_mmo_h3_client.c is new code, not a vendored file:
+# it reuses picoquic_create/_create_cnx/_start_client_cnx and (unmodified)
+# picoquic_demo_client_callback for receiving, and adds one new function,
+# build_authenticated_request(), that mirrors
+# h3zero_client_create_stream_request_ex's frame assembly with one extra
+# QPACK literal-name field (h3zero_qpack_literal_plus_name_encode, already
+# used elsewhere in h3zero.c for headers with no static-table entry) for
+# "authorization", plus a real JSON body embedded as a DATA frame for POST
+# actions. Verified locally against the live ArtifactsMMO API: authenticated
+# GET /characters/{name} and POST .../action/gathering (a real game action,
+# real cooldown, real inventory update) both round-tripped correctly.
+add_executable(artifacts_mmo_h3_client examples/artifacts_mmo_h3_client.c)
+target_compile_definitions(artifacts_mmo_h3_client PRIVATE ${PICOQUIC_DEFS})
+target_include_directories(artifacts_mmo_h3_client SYSTEM PRIVATE ${VENDOR_QUIC_INCLUDES}
+  "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/picoquic/picoquicfirst")
+if(WIN32 AND NOT (CMAKE_CXX_COMPILER_ID STREQUAL "MSVC"))
+  target_compile_options(artifacts_mmo_h3_client PRIVATE
+    /FIstdlib.h /FImalloc.h /FIWinsock2.h /FIws2tcpip.h
+    -Wno-error=incompatible-pointer-types
+    -Wno-error=implicit-function-declaration
+    -Wno-error=int-conversion)
+endif()
+target_link_libraries(artifacts_mmo_h3_client PRIVATE picoquic_vendored)
+
 # --- libriscv: the RISC-V sandbox substrate for ADR 0006's scripted-content
 # tier (docs/decisions/0006-libriscv-sandboxed-s7-lisp-over-native-janet.md).
 # Host-side library only here - no guest language (s7) is vendored or built

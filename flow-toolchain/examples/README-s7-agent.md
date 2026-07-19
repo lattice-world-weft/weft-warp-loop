@@ -65,9 +65,10 @@ path is exercised by any 499 (cooldown) or other action error.
   fields this domain reads, not a general parser.
 - No shrubbery-notation surface syntax — this is plain s7 s-expressions,
   same as `taskweft-lite.scm`. ADR 0006's shrubbery reader is unstarted.
-- The transport is curl, not the vendored picoquic H3 client
-  (`picoquicdemo_client`, this same directory's `CMakeLists.txt` entry) —
-  that path is proven as an HTTP/3 client against this same live server,
-  but authenticated requests need a QPACK header-frame encoder for a
-  custom `Authorization` header, which is not yet built (see
-  `docs/decisions/0007-s7-shrubbery-toolchain-scope-and-elixir-nif-comparison.md`).
+- The transport is curl, not `artifacts_mmo_h3_client` (this same
+  directory) — the vendored picoquic stack now does authenticated H3
+  (custom `authorization` header, real GET and POST with a JSON body,
+  verified against this same live server), but `s7_http_ffi.c` still
+  shells out to curl rather than linking picoquic directly. Wiring s7's
+  FFI to call `artifacts_mmo_h3_client`'s request path instead of curl is
+  the next step, not done in this pass.

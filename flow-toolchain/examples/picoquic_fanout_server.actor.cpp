@@ -362,46 +362,65 @@ ACTOR Future<Void> fanoutServer(uint16_t port, std::string certPath, std::string
 		int64_t wakeDelayUs = picoquic_get_next_wake_delay(quic, currentTime, 1000000);
 		state double wakeDelayS = wakeDelayUs <= 0 ? 0.0 : static_cast<double>(wakeDelayUs) / 1e6;
 
-		choose {
-			when(int n = wait(recvF)) {
-				if (sender.ip.isV6()) {
-					// Defensive: this socket is v4-only, but macOS has been seen
-					// delivering a v6-form sender; toV4() on it would throw
-					// bad_variant_access and kill this loop actor. Drop the
-					// datagram instead - QUIC retransmission recovers it.
-					TraceEvent(SevWarnAlways, "FanoutV6SenderSkipped").detail("From", sender);
-					recvF = socket->receiveFrom(recvBuf.data(), recvBuf.data() + recvBuf.size(), &sender);
-				} else {
-					sockaddr_in addrFrom;
-					memset(&addrFrom, 0, sizeof(addrFrom));
-					addrFrom.sin_family = AF_INET;
-					addrFrom.sin_port = htons(sender.port);
-					addrFrom.sin_addr.s_addr = htonl(sender.ip.toV4());
+		try {
+			choose {
+				when(int n = wait(recvF)) {
+					if (sender.ip.isV6()) {
+						// Defensive: this socket is v4-only, but macOS has been seen
+						// delivering a v6-form sender; toV4() on it would throw
+						// bad_variant_access and kill this loop actor. Drop the
+						// datagram instead - QUIC retransmission recovers it.
+						TraceEvent(SevWarnAlways, "FanoutV6SenderSkipped").detail("From", sender);
+						recvF = socket->receiveFrom(recvBuf.data(), recvBuf.data() + recvBuf.size(), &sender);
+					} else {
+						sockaddr_in addrFrom;
+						memset(&addrFrom, 0, sizeof(addrFrom));
+						addrFrom.sin_family = AF_INET;
+						addrFrom.sin_port = htons(sender.port);
+						addrFrom.sin_addr.s_addr = htonl(sender.ip.toV4());
 
-					sockaddr_in addrTo;
-					memset(&addrTo, 0, sizeof(addrTo));
-					addrTo.sin_family = AF_INET;
-					addrTo.sin_port = htons(port);
+						sockaddr_in addrTo;
+						memset(&addrTo, 0, sizeof(addrTo));
+						addrTo.sin_family = AF_INET;
+						addrTo.sin_port = htons(port);
 
-					int incomingRet = picoquic_incoming_packet(quic,
-					                          recvBuf.data(),
-					                          static_cast<size_t>(n),
-					                          reinterpret_cast<sockaddr*>(&addrFrom),
-					                          reinterpret_cast<sockaddr*>(&addrTo),
-					                          0,
-					                          0,
-					                          static_cast<uint64_t>(now() * 1e6));
-					if (incomingRet != 0) {
-						TraceEvent(SevWarn, "FanoutIncomingPacketFailed")
-						    .detail("Ret", incomingRet)
-						    .detail("Bytes", n)
-						    .detail("From", sender);
+						int incomingRet = picoquic_incoming_packet(quic,
+						                          recvBuf.data(),
+						                          static_cast<size_t>(n),
+						                          reinterpret_cast<sockaddr*>(&addrFrom),
+						                          reinterpret_cast<sockaddr*>(&addrTo),
+						                          0,
+						                          0,
+						                          static_cast<uint64_t>(now() * 1e6));
+						if (incomingRet != 0) {
+							TraceEvent(SevWarn, "FanoutIncomingPacketFailed")
+							    .detail("Ret", incomingRet)
+							    .detail("Bytes", n)
+							    .detail("From", sender);
+						}
+						recvF = socket->receiveFrom(recvBuf.data(), recvBuf.data() + recvBuf.size(), &sender);
 					}
-					recvF = socket->receiveFrom(recvBuf.data(), recvBuf.data() + recvBuf.size(), &sender);
+				}
+				when(wait(delay(wakeDelayS))) {
 				}
 			}
-			when(wait(delay(wakeDelayS))) {
+		} catch (Error& e) {
+			// Windows surfaces an ICMP port-unreachable for a prior outbound
+			// datagram (e.g. this server's own reply racing a client that
+			// already gave up and closed its ephemeral port) as a
+			// connection-reset on this socket's next recv, even though UDP
+			// itself is connectionless - test_picoquic_fanout.py already
+			// works around the identical quirk on the client side. Before
+			// this catch, an uncaught connection_failed here killed this
+			// whole `loop` actor: the process stayed alive (nothing else
+			// keeps g_network->run() busy) but its listening socket was
+			// gone with it, so the server looked alive while answering no
+			// traffic at all. Drop it and keep receiving instead.
+			if (e.code() != error_code_connection_failed) {
+				throw;
 			}
+			TraceEvent(SevWarn, "FanoutRecvConnectionReset");
+			recvF = socket->receiveFrom(recvBuf.data(), recvBuf.data() + recvBuf.size(), &sender);
 		}
 
 		loop {

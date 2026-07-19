@@ -58,6 +58,11 @@ fit a sandboxed, fuel-bounded call boundary well.
   `fanout-core`'s plain FFI draws today.
 - A Lisp-1 specifically (single namespace for functions and values, as
   opposed to a Lisp-2 like Common Lisp or Emacs Lisp).
+- Surface syntax: scripted content is authored in shrubbery notation's
+  indentation-based grouping, not visible parenthesized s-expressions,
+  while the language underneath stays a Lisp-1 - the parenthesized form
+  is an implementation detail of the reader, not something a script
+  author sees.
 - License compatibility with the repo's no-GPL/AGPL constraint.
 
 ## Considered Options
@@ -81,7 +86,15 @@ Chosen option 3: libriscv embeds in the Flow server as the execution
 substrate, and s7 Scheme (a Lisp-1, also distributed as a single portable
 C file, built for embedding, with a track record in real-time/low-latency
 embedding contexts such as the Snd and CLM audio tools) compiles to
-RISC-V as the guest language. A Flow actor calls into guest functions
+RISC-V as the guest language. Script authors write shrubbery notation,
+not parenthesized s-expressions - a shrubbery-style reader sits in front
+of s7 and translates indentation-based grouping into s7's ordinary
+s-expression form before evaluation, so the language a mission-script or
+loot-table author sees has no visible parentheses even though s7 itself
+still evaluates a Lisp-1 underneath. That reader is the follow-up work
+already noted below (no such reader exists yet, for s7 or independent of
+Racket's own reference implementation); this ADR fixes it as the intended
+surface syntax, not an optional idea. A Flow actor calls into guest functions
 through libriscv's documented VMCALL pattern, under a
 `machine.simulate(max_instructions)` fuel limit and an explicit
 per-syscall allowlist — the same call shape `fanout-core`'s exported FFI
@@ -144,14 +157,14 @@ the indentation-based grouping layer Rhombus itself is built from, is a
 narrower and separable idea from option 5: its own documentation
 describes it as text-level conventions that "partially group input" and
 "leave further parsing to another layer," independent of Racket's macro
-expander or runtime. A from-scratch shrubbery-style reader sitting in
-front of s7 — translating indentation-based grouping into s7's ordinary
-s-expressions before evaluation — stays compatible with option 3's
-freestanding-build goal, since it touches only how source text is parsed,
-not what runs in the guest. No such reader exists today, for s7 or
-anywhere outside Racket's own reference implementation, so this is
-recorded as a possible follow-up to option 3's surface syntax, not a
-decision this ADR makes.
+expander or runtime. That separability is exactly why option 3 adopts it
+as s7's surface syntax while rejecting option 5 outright: a
+shrubbery-style reader in front of s7 only changes how source text is
+parsed into s-expressions, never what runs in the guest, so it costs
+nothing against the freestanding-build goal that ruled out Racket itself.
+No such reader exists today, for s7 or anywhere outside Racket's own
+reference implementation - building it is part of the unstarted work this
+ADR records, not a finished design.
 
 Option 6 remains the shipping state until this tier is actually built.
 
@@ -169,9 +182,9 @@ Option 6 remains the shipping state until this tier is actually built.
 - Bad: this vendors a second C runtime and a new cross-compilation-to-
   RISC-V build step, on top of the existing Lean4/CMake/vcpkg/Python
   toolchain.
-- Bad: the VMCALL wiring into a Flow actor and re-running the existing
-  FP-stress byte-compare gate (ADR 0004's precedent) against s7's
-  execution are unstarted work — this ADR records the direction, not a
-  finished design.
+- Bad: the VMCALL wiring into a Flow actor, the shrubbery-style reader in
+  front of s7, and re-running the existing FP-stress byte-compare gate
+  (ADR 0004's precedent) against s7's execution are all unstarted work —
+  this ADR records the direction, not a finished design.
 - Bad: a devtool-only native scripting layer (REPL, cert-mint script)
   stays an open, separate question this ADR does not resolve.

@@ -7,8 +7,15 @@ docs (`s7.html`, the minimal-repl recipe) confirm this file can be
 empty. Several OS-facing includes are gated behind config macros that
 default to off when `mus-config.h` is empty, so they need nothing:
 
-- `dlfcn.h` — behind `WITH_C_LOADER` (default unset/0): C module dynamic
-  loading. Irrelevant for a sandboxed guest with no filesystem anyway.
+- `dlfcn.h` — behind `WITH_C_LOADER`. Correction from an earlier pass of
+  this doc: `WITH_C_LOADER` does **not** default to 0 with an empty
+  `mus-config.h` — `s7.c:221` defines it as `WITH_GCC`, which is itself
+  `(defined(__GNUC__) || defined(__clang__))` (`s7.c:244`), i.e. true on
+  any GCC/Clang build unless explicitly overridden. Confirmed the hard
+  way: a native build with an empty `mus-config.h` on this host still
+  tried to `#include <dlfcn.h>` and failed. The RISC-V guest build must
+  pass `-DWITH_C_LOADER=0` explicitly — an empty `mus-config.h` alone is
+  not enough. Irrelevant for a sandboxed guest with no filesystem anyway.
 - `fcntl.h`, `dirent.h` — behind `WITH_SYSTEM_EXTRAS` (default
   unset/0): file descriptors, directory listing.
 - `signal.h` — behind `TRAP_SEGFAULT` (default unset/0): segv->longjmp

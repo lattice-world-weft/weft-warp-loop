@@ -326,7 +326,17 @@ ACTOR Future<Void> fanoutServer(uint16_t port, std::string certPath, std::string
 	state std::array<uint8_t, PICOQUIC_RESET_SECRET_SIZE> resetSeed;
 	resetSeed.fill(0x42);
 
-	state picoquic_quic_t* quic = picoquic_create(64,
+	// 64 (picoquic's own common default) was a real, unintentional ceiling
+	// found while load-testing this server with fanout_load_client - not
+	// yet actually hit (that testing found a lower, client/OS-side ceiling
+	// first: see flow-toolchain/examples/fanout_load_client.actor.cpp's
+	// header comment), but worth removing proactively so it isn't the
+	// next one found. 2048 is comfortably above any near-term target
+	// without committing to a specific fabric-scale number - that number
+	// depends on the still-unstarted Hilbert-curve interest/authority
+	// redesign (docs/decisions/0008-fiedler-scale-constants-and-fabric-interest-authority.md),
+	// not on this single-shard server's own raw connection handling.
+	state picoquic_quic_t* quic = picoquic_create(2048,
 	                                               certPath.c_str(),
 	                                               keyPath.c_str(),
 	                                               nullptr,

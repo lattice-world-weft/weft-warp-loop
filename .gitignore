@@ -6,4 +6,5 @@ __pycache__/
 fanout_server.*.xml
 s7_riscv_actor_test.*.xml
 fanout_load_client.*.xml
+fanout_load_client_worker.*.xml
 /flow-toolchain/sketch-core/.lake/

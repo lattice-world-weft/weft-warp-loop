@@ -285,6 +285,40 @@ target_compile_definitions(picoquic_vendor_test PRIVATE ${PICOQUIC_DEFS})
 target_include_directories(picoquic_vendor_test SYSTEM PRIVATE ${VENDOR_QUIC_INCLUDES})
 target_link_libraries(picoquic_vendor_test PRIVATE picoquic_vendored)
 
+# --- picoquicdemo_client: the vendored stack as a real HTTP/3 client against
+# an independent, external, live server - not the Flow-driven fanout relay.
+# Unlike picoquic_vendored (which never owns a real socket, so Flow's
+# simulator stays in control - see the comment above VENDOR_QUIC_INCLUDES),
+# this target genuinely owns its own sockets via picoquic's own packet loop:
+# it is a standalone devtool, not on Flow's determinism-critical path, so
+# picoquic driving real I/O here is the correct shape, not a violation of it.
+# picoquicdemo.c/getopt.c/demoserver.c/sockloop.c/winsockloop.c are the
+# vendored reference CLI client+packet-loop this repo does not otherwise
+# build; verified locally against a live external HTTP/3 server (real TLS
+# 1.3 handshake, real CA chain validation via certs/mozilla-cacert.pem,
+# real response body) before wiring in here.
+file(GLOB PICOQUICDEMO_EXTRA_SRCS
+  "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/picoquic/picoquic/sockloop.c"
+  "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/picoquic/picohttp/demoserver.c"
+  "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/picoquic/picoquicfirst/picoquicdemo.c"
+  "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/picoquic/picoquicfirst/getopt.c")
+if(WIN32)
+  list(APPEND PICOQUICDEMO_EXTRA_SRCS
+    "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/picoquic/picoquic/winsockloop.c")
+endif()
+add_executable(picoquicdemo_client ${PICOQUICDEMO_EXTRA_SRCS})
+target_compile_definitions(picoquicdemo_client PRIVATE ${PICOQUIC_DEFS})
+target_include_directories(picoquicdemo_client SYSTEM PRIVATE ${VENDOR_QUIC_INCLUDES}
+  "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/picoquic/picoquicfirst")
+if(WIN32 AND NOT (CMAKE_CXX_COMPILER_ID STREQUAL "MSVC"))
+  target_compile_options(picoquicdemo_client PRIVATE
+    /FIstdlib.h /FImalloc.h /FIWinsock2.h /FIws2tcpip.h
+    -Wno-error=incompatible-pointer-types
+    -Wno-error=implicit-function-declaration
+    -Wno-error=int-conversion)
+endif()
+target_link_libraries(picoquicdemo_client PRIVATE picoquic_vendored)
+
 # --- libriscv: the RISC-V sandbox substrate for ADR 0006's scripted-content
 # tier (docs/decisions/0006-libriscv-sandboxed-s7-lisp-over-native-janet.md).
 # Host-side library only here - no guest language (s7) is vendored or built

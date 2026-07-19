@@ -79,14 +79,24 @@ ACTOR Future<Void> runWorkerThenStop(int playerId, std::string room, int ticks, 
 	return Void();
 }
 
-int runWorker(uint16_t port, std::string room, int playerId, int ticks, double deadlineSeconds) {
+void runWorker(uint16_t port, std::string room, int playerId, int ticks, double deadlineSeconds) {
 	platformInit();
 	Error::init();
 	g_network = newNet2(TLSConfig());
 	openTraceFile({}, 10 << 20, 100 << 20, ".", "fanout_load_client_worker");
 	Future<Void> done = runWorkerThenStop(playerId, room, ticks, port, deadlineSeconds);
 	g_network->run();
-	return g_workerExitCode;
+	// _exit(), not return: matches the pattern already established in
+	// s7_riscv_actor_test.cpp for a short-lived process that doesn't need
+	// its own cross-library static destructors to run cleanly on the way
+	// out. Tried as the fix for an intermittent crash in this process
+	// (an ASSERT deep in vendored flow/SimpleCounter.cpp's periodic
+	// counter dump) - it wasn't: that assertion fires during normal
+	// runtime, independent of exit path, and the real fix is
+	// flow/patches/0001-simplecounter-skip-invalid-name.patch. Kept
+	// anyway since a worker spawned potentially thousands of times per
+	// ramp has no reason to pay for teardown it doesn't need.
+	_exit(g_workerExitCode);
 }
 
 // --- Coordinator: process spawn/wait, no Flow actors needed - this role
@@ -221,8 +231,17 @@ int runRound(const std::string& execPath, uint16_t port, const std::string& room
              double deadlineSeconds) {
 	std::vector<ChildHandle> children;
 	children.reserve(playerCount);
+	int spawnFailures = 0;
 	for (int i = 0; i < playerCount; i++) {
 		children.push_back(spawnWorker(execPath, port, room, i, ticks, deadlineSeconds));
+		if (!childIsAlive(children.back())) {
+			spawnFailures++;
+		}
+	}
+	if (spawnFailures > 0) {
+		fprintf(stderr, "[diag] %d/%d spawnWorker calls failed to produce a live process\n", spawnFailures,
+		        playerCount);
+		fflush(stderr);
 	}
 
 	std::vector<bool> reaped(playerCount, false);
@@ -299,7 +318,7 @@ int main(int argc, char** argv) {
 		int playerId = argc > 4 ? atoi(argv[4]) : 0;
 		int ticks = argc > 5 ? atoi(argv[5]) : 5;
 		double deadlineSeconds = argc > 6 ? atof(argv[6]) : 10.0;
-		return runWorker(port, room, playerId, ticks, deadlineSeconds);
+		runWorker(port, room, playerId, ticks, deadlineSeconds); // _exit()s internally
 	}
 
 	uint16_t serverPort = argc > 1 ? static_cast<uint16_t>(atoi(argv[1])) : 4433;

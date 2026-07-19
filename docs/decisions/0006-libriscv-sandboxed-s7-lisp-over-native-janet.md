@@ -2,7 +2,29 @@
 
 ## Status
 
-Accepted (a future PR; not yet implemented).
+Accepted (a future PR; not yet fully implemented). Implementation status:
+
+- Done: libriscv v1.18 vendored (`flow-toolchain/thirdparty/libriscv`),
+  wired into the CMake build as the `riscv` target, with a host-side
+  smoke test (`flow-toolchain/examples/libriscv_vendor_test.cpp`,
+  covered by CI in `flow-runtime.yml`) that verifies both properties this
+  ADR depends on against the vendored code: fuel metering actually bounds
+  execution, and repeated runs of the same guest produce identical
+  instruction counts and return values.
+- Done: s7 vendored (`flow-toolchain/thirdparty/s7`, pinned to a specific
+  upstream commit — no tagged releases exist to pin to instead).
+- Blocked: cross-compiling s7 into a RISC-V guest needs a libc (s7
+  depends on the standard library throughout: `stdio`, `stdlib`, `string`,
+  `math`). musl is off the table by explicit constraint, and vendoring
+  newlib or another general-purpose libc project raises the same
+  objection — the intended path is a small libc subset hand-built for
+  exactly what s7 needs (following libriscv's own
+  `docs/FREESTANDING.md` bare-`_start` pattern), which is a substantial,
+  distinct piece of work, not yet started.
+- Not started: the shrubbery-style reader, the VMCALL boundary into a
+  Flow actor, the syscall allowlist, and the FP-stress byte-compare
+  re-verification — all depend on a working s7 guest binary existing
+  first.
 
 ## Context and Problem Statement
 

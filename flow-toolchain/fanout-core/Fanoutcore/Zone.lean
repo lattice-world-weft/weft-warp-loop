@@ -138,17 +138,23 @@ def disjointRanges (rs : Array ZoneRange) : Bool :=
 
 /-- A zone: its authority range, and the entities it currently simulates
     (analogous to `Room.subscribers`, but authority - one owner - not
-    subscription - many). -/
+    subscription - many). Each entity's own last-known curve index is
+    carried alongside its connId (not just the connId alone, as before
+    E-GOSSIP): splitting a zone (below) needs to know which side of the
+    new midpoint each existing entity falls on, and nothing else in the
+    system otherwise tracks per-entity curve position once `moveEntity`
+    has filed it into a zone. -/
 structure Zone where
   range    : ZoneRange
-  entities : Array UInt64
+  entities : Array (UInt64 × UInt64) -- (connId, curve idx)
   deriving Repr, Inhabited
 
-def Zone.sub (z : Zone) (connId : UInt64) : Zone :=
-  if z.entities.contains connId then z else { z with entities := z.entities.push connId }
+def Zone.sub (z : Zone) (connId idx : UInt64) : Zone :=
+  if z.entities.any (·.1 == connId) then z
+  else { z with entities := z.entities.push (connId, idx) }
 
 def Zone.unsub (z : Zone) (connId : UInt64) : Zone :=
-  { z with entities := z.entities.filter (· != connId) }
+  { z with entities := z.entities.filter (·.1 != connId) }
 
 /-- The zone whose range contains curve index `idx` is authoritative for
     whatever sits there. `none` if no zone's range covers that index - a

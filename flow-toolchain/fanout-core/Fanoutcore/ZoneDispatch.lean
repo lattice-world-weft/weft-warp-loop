@@ -83,7 +83,7 @@ def ZoneWorld.targetsForIndex (w : ZoneWorld) (publisherConnId : UInt64) (idx : 
     let mut result : Array UInt64 := #[]
     for i in reach do
       if h : i < plain.size then
-        for connId in plain[i].entities do
+        for (connId, _) in plain[i].entities do
           if connId != publisherConnId then
             result := result.push connId
     return result
@@ -104,7 +104,7 @@ def ZoneWorld.targetsFor (w : ZoneWorld) (publisherConnId : UInt64) (pos : Pos3)
 def ZoneWorld.moveEntityToIndex (w : ZoneWorld) (connId : UInt64) (idx : UInt64) : ZoneWorld := Id.run do
   let mut zones := w.zones
   for (id, zone) in w.liveZones do
-    if zone.entities.contains connId then
+    if zone.entities.any (·.1 == connId) then
       zones := zones.update id (zone.unsub connId)
   let w := { w with zones := zones }
   match w.authorityForIndex idx with
@@ -112,7 +112,7 @@ def ZoneWorld.moveEntityToIndex (w : ZoneWorld) (connId : UInt64) (idx : UInt64)
   | some zoneId =>
     match w.zones.find zoneId with
     | none => return w
-    | some zone => return { w with zones := w.zones.update zoneId (zone.sub connId) }
+    | some zone => return { w with zones := w.zones.update zoneId (zone.sub connId idx) }
 
 def ZoneWorld.moveEntity (w : ZoneWorld) (connId : UInt64) (pos : Pos3) : ZoneWorld :=
   w.moveEntityToIndex connId (hilbert3D w.bits pos)
@@ -122,8 +122,62 @@ def ZoneWorld.moveEntity (w : ZoneWorld) (connId : UInt64) (pos : Pos3) : ZoneWo
 def ZoneWorld.removeEntity (w : ZoneWorld) (connId : UInt64) : ZoneWorld := Id.run do
   let mut zones := w.zones
   for (id, zone) in w.liveZones do
-    if zone.entities.contains connId then
+    if zone.entities.any (·.1 == connId) then
       zones := zones.update id (zone.unsub connId)
   return { w with zones := zones }
+
+/-- E-GOSSIP (density-tracking zone partitioning, ADR 0008): if `zoneId`'s
+    live population exceeds `threshold`, splits its range at the
+    midpoint into two new zones and redistributes its entities into
+    whichever half their own stored curve index falls in, then frees the
+    original zone. A range of length 1 (`stop = start + 1`) cannot be
+    split further (the midpoint would equal `start`, producing a
+    zero-width half) and is left alone even over threshold - an
+    unavoidable floor on how fine partitioning can get, not a bug.
+
+    This bounds each zone's population (and so `targetsForIndex`'s
+    per-publish cost, which is quadratic in a zone's own population) by
+    `threshold` regardless of how many entities the world holds in total
+    - the mechanism the whole Hilbert-zone design exists for: without it,
+    every entity lands in one ever-growing zone (this project's current
+    startup bootstrap - `fanoutCoreInitialize`'s single default zone
+    spanning the entire range) and per-publish cost grows with total
+    population `N`, not a per-zone constant `K` - see fanout_load_client's
+    own measured O(N^3) regression (fixed in `targetsForIndex` above)
+    for what happens when a per-zone cost silently becomes a per-system
+    one. No merge counterpart yet (zones that empty out via `removeEntity`
+    stay allocated, just idle) - that is later, separate work: merge
+    needs a hysteresis threshold of its own (mirroring `moveEntityToIndex`
+    doc comment above) to avoid a population oscillating around the split
+    threshold causing every publish to alternately split and merge the
+    same zone. -/
+def ZoneWorld.maybeSplitZone (w : ZoneWorld) (zoneId : Id) (threshold : Nat) : ZoneWorld :=
+  match w.zones.find zoneId with
+  | none => w
+  | some zone =>
+    if zone.entities.size <= threshold then w
+    else
+      let start := zone.range.start
+      let stop := zone.range.stop
+      let mid := start + (stop - start) / 2
+      if mid <= start then w
+      else
+        let lower : ZoneRange := { start := start, stop := mid }
+        let upper : ZoneRange := { start := mid, stop := stop }
+        let w := w.freeZone zoneId
+        match w.allocZone lower with
+        | none => w
+        | some (w, lowerId) =>
+          match w.allocZone upper with
+          | none => w
+          | some (w, upperId) =>
+            Id.run do
+              let mut zones := w.zones
+              for (connId, idx) in zone.entities do
+                let targetId := if idx < mid then lowerId else upperId
+                match zones.find targetId with
+                | none => pure ()
+                | some target => zones := zones.update targetId (target.sub connId idx)
+              return { w with zones := zones }
 
 end Fanoutcore

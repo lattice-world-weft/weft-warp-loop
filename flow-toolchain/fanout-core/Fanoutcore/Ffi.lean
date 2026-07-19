@@ -76,7 +76,18 @@ def zoneFree (zoneId : UInt64) : IO Unit := do
 @[export fanout_entity_move]
 def entityMove (connId : UInt64) (x : Int64) (y : Int64) (z : Int64) : IO Unit := do
   let s ← stateRef.get
-  stateRef.set { s with zoneWorld := s.zoneWorld.moveEntity connId { x := x, y := y, z := z } }
+  let pos : Pos3 := { x := x, y := y, z := z }
+  let moved := s.zoneWorld.moveEntity connId pos
+  -- E-GOSSIP: check the zone the entity just landed in for a split every
+  -- move, not on a separate timer/tick - population changes exactly when
+  -- entities move, so there is no reason to defer the check to a later
+  -- pass (and no separate scheduling mechanism to keep in sync with this
+  -- one if there were).
+  let final :=
+    match moved.authorityFor pos with
+    | none => moved
+    | some zoneId => moved.maybeSplitZone zoneId zoneSplitThreshold
+  stateRef.set { s with zoneWorld := final }
 
 @[export fanout_entity_remove]
 def entityRemove (connId : UInt64) : IO Unit := do

@@ -201,7 +201,7 @@ def moveThenAuthorityContainsCheck (lens : List Nat) (connId idx : Nat) : Bool :
     | some zoneId =>
       match w'.zones.find zoneId with
       | none => false
-      | some zone => zone.entities.contains connId.toUInt64
+      | some zone => zone.entities.any (·.1 == connId.toUInt64)
 
 /-- True iff moving an entity to a *different* zone removes it from its
     previous zone's membership - vacuously true if either index has no
@@ -216,7 +216,7 @@ def migrationLeavesOldZoneCheck (lens : List Nat) (connId idxA idxB : Nat) : Boo
       let w2 := w1.moveEntityToIndex connId.toUInt64 idxB.toUInt64
       match w2.zones.find zoneAId with
       | none => true
-      | some zoneA => !zoneA.entities.contains connId.toUInt64
+      | some zoneA => !zoneA.entities.any (·.1 == connId.toUInt64)
   | _, _ => true
 
 /-- True iff `targetsForIndex` never includes the publisher itself. -/
@@ -262,7 +262,78 @@ def removeEntityCheck (lens : List Nat) (connId idx : Nat) : Bool :=
   let w := zoneWorldFromLengths 8 lens
   let w1 := w.moveEntityToIndex connId.toUInt64 idx.toUInt64
   let w2 := w1.removeEntity connId.toUInt64
-  w2.liveZones.all fun (_, z) => !z.entities.contains connId.toUInt64
+  w2.liveZones.all fun (_, z) => !z.entities.any (·.1 == connId.toUInt64)
+
+/-- Builds a `ZoneWorld` with a single zone spanning `[0, span)`, places
+    each of `conns` at index `idx % span` (all landing in that one zone
+    - `span < 2` returns `none` since such a range can never split, its
+    midpoint would equal `start`). Used by the E-GOSSIP split properties
+    below, mirroring `zoneWorldFromLengths`'s role for the plain
+    authority/migration properties above it. -/
+def splitSetup (bits span : Nat) (conns idxs : List Nat) : Option (ZoneWorld × Id) :=
+  if span < 2 then none
+  else
+    let w := ZoneWorld.empty (conns.length + 4) bits
+    match w.allocZone { start := 0, stop := span.toUInt64 } with
+    | none => none
+    | some (w, zoneId) =>
+      let placements := List.zip conns idxs
+      let w' :=
+        placements.foldl (fun (acc : ZoneWorld) (c, i) =>
+          acc.moveEntityToIndex c.toUInt64 (i.toUInt64 % span.toUInt64)) w
+      some (w', zoneId)
+
+/-- True iff `maybeSplitZone` (threshold 0, so it always splits whenever
+    the zone holds any entities and `span >= 2`) preserves the total live
+    entity count across the resulting zones - no entity lost or
+    duplicated between the two halves. Vacuously true when the setup
+    can't produce a split. -/
+def splitPreservesEntityCountCheck (span : Nat) (conns idxs : List Nat) : Bool :=
+  match splitSetup 8 span conns idxs with
+  | none => true
+  | some (w, zoneId) =>
+    match w.zones.find zoneId with
+    | none => true
+    | some zone =>
+      let before := zone.entities.size
+      let w' := w.maybeSplitZone zoneId 0
+      let after := (w'.liveZones.map fun (_, z) => z.entities.size).foldl (· + ·) 0
+      before == after
+
+/-- True iff, after a split, every entity lands in a live zone whose
+    range actually contains that entity's own stored curve index - the
+    correctness property the whole split exists for (an entity must stay
+    discoverable via `authorityForIndex` at its own position, not
+    silently misfiled into the wrong half by the split). -/
+def splitPlacesEntitiesCorrectlyCheck (span : Nat) (conns idxs : List Nat) : Bool :=
+  match splitSetup 8 span conns idxs with
+  | none => true
+  | some (w, zoneId) =>
+    let w' := w.maybeSplitZone zoneId 0
+    w'.liveZones.all fun (_, z) =>
+      z.entities.all fun (_, idx) => z.range.contains idx
+
+/-- True iff live zone ranges stay pairwise disjoint after a split -
+    `maybeSplitZone` must not silently create overlapping authority. -/
+def splitKeepsRangesDisjointCheck (span : Nat) (conns idxs : List Nat) : Bool :=
+  match splitSetup 8 span conns idxs with
+  | none => true
+  | some (w, zoneId) =>
+    let w' := w.maybeSplitZone zoneId 0
+    disjointRanges (w'.liveZones.map fun (_, z) => z.range)
+
+/-- True iff a zone at or under `threshold` population is left untouched
+    by `maybeSplitZone` - splitting is conditional on exceeding it, not
+    unconditional. -/
+def splitRespectsThresholdCheck (span : Nat) (conns idxs : List Nat) : Bool :=
+  match splitSetup 8 span conns idxs with
+  | none => true
+  | some (w, zoneId) =>
+    match w.zones.find zoneId with
+    | none => true
+    | some zone =>
+      let w' := w.maybeSplitZone zoneId zone.entities.size
+      w'.liveZones.size == w.liveZones.size
 
 /-- Run one property; print the counterexample and exit non-zero on failure. -/
 def runCheck (name : String) (p : Prop) [Testable p] (cfg : Configuration) : IO Unit := do
@@ -375,5 +446,29 @@ def main : IO Unit := do
      NamedBinder "conns" <| ∀ (conns : List Nat),
      NamedBinder "idxs" <| ∀ (idxs : List Nat),
       noDuplicateTargetsCheck lens conns idxs = true) cfg
+
+  runCheck "maybeSplitZone preserves the total live entity count"
+    (NamedBinder "span" <| ∀ (span : Nat),
+     NamedBinder "conns" <| ∀ (conns : List Nat),
+     NamedBinder "idxs" <| ∀ (idxs : List Nat),
+      splitPreservesEntityCountCheck span conns idxs = true) cfg
+
+  runCheck "maybeSplitZone places every entity in a zone whose range contains its own curve index"
+    (NamedBinder "span" <| ∀ (span : Nat),
+     NamedBinder "conns" <| ∀ (conns : List Nat),
+     NamedBinder "idxs" <| ∀ (idxs : List Nat),
+      splitPlacesEntitiesCorrectlyCheck span conns idxs = true) cfg
+
+  runCheck "maybeSplitZone keeps live zone ranges pairwise disjoint"
+    (NamedBinder "span" <| ∀ (span : Nat),
+     NamedBinder "conns" <| ∀ (conns : List Nat),
+     NamedBinder "idxs" <| ∀ (idxs : List Nat),
+      splitKeepsRangesDisjointCheck span conns idxs = true) cfg
+
+  runCheck "maybeSplitZone leaves a zone at or under threshold untouched"
+    (NamedBinder "span" <| ∀ (span : Nat),
+     NamedBinder "conns" <| ∀ (conns : List Nat),
+     NamedBinder "idxs" <| ∀ (idxs : List Nat),
+      splitRespectsThresholdCheck span conns idxs = true) cfg
 
   IO.println "ALL PROPERTY TESTS PASSED"

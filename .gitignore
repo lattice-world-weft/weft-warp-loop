@@ -7,4 +7,5 @@ fanout_server.*.xml
 s7_riscv_actor_test.*.xml
 fanout_load_client.*.xml
 fanout_load_client_worker.*.xml
+fanout_load_client_multi.*.xml
 /flow-toolchain/sketch-core/.lake/

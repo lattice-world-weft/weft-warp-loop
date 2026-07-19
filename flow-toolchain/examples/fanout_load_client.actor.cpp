@@ -2,8 +2,9 @@
 // Copyright (c) 2026 K. S. Ernest (iFire) Lee
 //
 // A Flow-native load client for picoquic_fanout_server: one simulated
-// player, a real picoquic client connection (SUB then repeated PUB, the
-// same wire protocol test_picoquic_fanout.py speaks) over its own Flow
+// player, a real picoquic client connection speaking repeated ZPB
+// (zone-authority/interest publish, ADR 0008 - test_picoquic_zpb.py
+// proves this same verb end to end at small scale) over its own Flow
 // IUDPSocket and picoquic_quic_t context - the same receiveFrom/
 // prepare_next_packet loop shape picoquic_fanout_server.actor.cpp itself
 // uses on the server side.
@@ -35,8 +36,7 @@
 // only ever handles one player.
 //
 // Wire protocol (matches picoquic_fanout_server.actor.cpp exactly):
-//   SUB <topic>\n
-//   PUB <topic>\n<100-byte lean-entity-packet payload>
+//   ZPB <x> <y> <z>\n<100-byte lean-entity-packet payload>
 
 #include "flow/Platform.h"
 #include "flow/TLSConfig.h"
@@ -73,7 +73,6 @@ enum class PlayerState { Connecting, Publishing, Done, Failed };
 
 struct PlayerCtx {
 	int playerId = 0;
-	std::string room;
 	int ticksRemaining = 0;
 	PlayerState state = PlayerState::Connecting;
 	uint64_t streamId = 0;
@@ -88,25 +87,30 @@ std::vector<uint8_t> makePayload(int playerId, int tick) {
 	return payload;
 }
 
-// SUB gets no application-level reply (only OTHER connections' PUBs fan
-// out to a subscriber - the wire protocol never echoes a publisher's own
-// PUB back to itself, matching what the working Python harness already
-// observed empirically). Gating each tick's PUB on incoming stream data
-// therefore deadlocks every connection: nobody would ever send a first
-// PUB to trigger anyone else's next one. So SUB and every tick's PUB go
-// out together, once, right when the connection is ready - not paced by
-// round-trips that don't exist in this protocol.
+// ZPB (ADR 0008 zone-authority/interest dispatch, wired into the wire
+// protocol in picoquic_fanout_server.actor.cpp) gets no application-level
+// reply for a publish that reaches nobody, same as PUB never did - gating
+// each tick on incoming stream data would deadlock every connection for
+// the same reason it did before switching from PUB to ZPB: nobody would
+// ever send a first publish to trigger anyone else's next one. So every
+// tick's ZPB goes out together, once, right when the connection is ready
+// - not paced by round-trips that don't exist in this protocol.
+//
+// Position doesn't need to be coordinated across players: the server's
+// one default zone (fanout_core_ffi.cpp's startup bootstrap) spans the
+// entire Hilbert range, so any (x, y, z) lands every player in the same
+// zone regardless of what it is. playerId/tick only need to vary the
+// coordinates deterministically, matching makePayload's own seed - this
+// is a load-generation detail, not a claim about real player positions.
 void sendAllTicks(picoquic_cnx_t* cnx, PlayerCtx& player) {
-	std::string subHeader = "SUB " + player.room + "\n";
-	picoquic_add_to_stream(cnx, player.streamId, reinterpret_cast<const uint8_t*>(subHeader.data()),
-	                        subHeader.size(), 0);
 	player.state = PlayerState::Publishing;
 	while (player.ticksRemaining > 0) {
 		int tick = player.ticksRemaining;
-		std::string pubHeader = "PUB " + player.room + "\n";
+		std::string zpbHeader =
+		    "ZPB " + std::to_string(player.playerId) + " " + std::to_string(tick) + " 0\n";
 		std::vector<uint8_t> payload = makePayload(player.playerId, tick);
-		picoquic_add_to_stream(cnx, player.streamId, reinterpret_cast<const uint8_t*>(pubHeader.data()),
-		                        pubHeader.size(), 0);
+		picoquic_add_to_stream(cnx, player.streamId, reinterpret_cast<const uint8_t*>(zpbHeader.data()),
+		                        zpbHeader.size(), 0);
 		picoquic_add_to_stream(cnx, player.streamId, payload.data(), payload.size(), 0);
 		player.ticksRemaining--;
 	}
@@ -153,14 +157,12 @@ NetworkAddress sockaddrToNetworkAddress(const sockaddr_storage& addr) {
 } // namespace
 
 // One simulated player: its own picoquic_quic_t, its own Flow UDP socket,
-// one connection. Returns true once its SUB and all its PUB ticks have
-// been queued and the connection reached picoquic_state_ready; false if
+// one connection. Returns true once all its ZPB ticks have been queued
+// and the connection reached picoquic_state_ready; false if
 // deadlineSeconds elapses first.
-ACTOR Future<bool> runOnePlayer(int playerId, std::string room, int ticks, uint16_t serverPort,
-                                 double deadlineSeconds) {
+ACTOR Future<bool> runOnePlayer(int playerId, int ticks, uint16_t serverPort, double deadlineSeconds) {
 	state PlayerCtx player;
 	player.playerId = playerId;
-	player.room = room;
 	player.ticksRemaining = ticks;
 
 	state std::array<uint8_t, PICOQUIC_RESET_SECRET_SIZE> resetSeed;

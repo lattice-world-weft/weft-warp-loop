@@ -33,10 +33,10 @@
 //     actually calls for - proving raw connection capacity across a
 //     fabric, not proving the fabric's eventual real spatial semantics.
 //
-//   fanout_load_client --worker <port> <room> <playerId> <ticks> <deadlineSeconds>
+//   fanout_load_client --worker <port> <playerId> <ticks> <deadlineSeconds>
 //     Worker role. Runs exactly one simulated player (runOnePlayer,
-//     fanout_load_client.actor.cpp) and exits 0 if it completed its SUB
-//     and every PUB tick before the deadline, 1 otherwise.
+//     fanout_load_client.actor.cpp) and exits 0 if it completed every ZPB
+//     tick before the deadline, 1 otherwise.
 
 #include "flow/Platform.h"
 #include "flow/TLSConfig.h"
@@ -65,7 +65,7 @@ extern char** environ;
 
 #include "flow/actorcompiler.h" // This must be the last #include.
 
-Future<bool> runOnePlayer(int const& playerId, std::string const& room, int const& ticks, uint16_t const& serverPort,
+Future<bool> runOnePlayer(int const& playerId, int const& ticks, uint16_t const& serverPort,
                            double const& deadlineSeconds);
 
 namespace {
@@ -81,21 +81,20 @@ int g_workerExitCode = 1;
 // f's error must never reach wait() and throw - runOnePlayer's own setup
 // failures (throw internal_error()) surface here as isError(), a plain
 // non-throwing accessor, not a caught exception.
-ACTOR Future<Void> runWorkerThenStop(int playerId, std::string room, int ticks, uint16_t serverPort,
-                                      double deadlineSeconds) {
-	state Future<bool> result = runOnePlayer(playerId, room, ticks, serverPort, deadlineSeconds);
+ACTOR Future<Void> runWorkerThenStop(int playerId, int ticks, uint16_t serverPort, double deadlineSeconds) {
+	state Future<bool> result = runOnePlayer(playerId, ticks, serverPort, deadlineSeconds);
 	wait(ready(result));
 	g_workerExitCode = (!result.isError() && result.get()) ? 0 : 1;
 	g_network->stop();
 	return Void();
 }
 
-void runWorker(uint16_t port, std::string room, int playerId, int ticks, double deadlineSeconds) {
+void runWorker(uint16_t port, int playerId, int ticks, double deadlineSeconds) {
 	platformInit();
 	Error::init();
 	g_network = newNet2(TLSConfig());
 	openTraceFile({}, 10 << 20, 100 << 20, ".", "fanout_load_client_worker");
-	Future<Void> done = runWorkerThenStop(playerId, room, ticks, port, deadlineSeconds);
+	Future<Void> done = runWorkerThenStop(playerId, ticks, port, deadlineSeconds);
 	g_network->run();
 	// _exit(), not return: matches the pattern already established in
 	// s7_riscv_actor_test.cpp for a short-lived process that doesn't need
@@ -126,12 +125,12 @@ struct ChildHandle {
 #endif
 
 std::string quoteArg(const std::string& arg) {
-	// Every argument this coordinator passes is a number or a room name
-	// this file itself generated (e.g. "load-ramp3") - none contain
-	// spaces or quotes, so unconditional double-quoting is sufficient for
-	// both CreateProcess's command-line parsing and a POSIX argv vector
-	// (where quoting isn't needed at all, but doesn't hurt to keep args
-	// uniform between the two spawn paths).
+	// Every argument this coordinator passes is a plain number or a
+	// filesystem path this file itself computed - none contain spaces or
+	// quotes, so unconditional double-quoting is sufficient for both
+	// CreateProcess's command-line parsing and a POSIX argv vector (where
+	// quoting isn't needed at all, but doesn't hurt to keep args uniform
+	// between the two spawn paths).
 	return "\"" + arg + "\"";
 }
 
@@ -170,11 +169,10 @@ ChildHandle spawnProcess(const std::string& execPath, const std::vector<std::str
 	return child;
 }
 
-ChildHandle spawnWorker(const std::string& execPath, uint16_t port, const std::string& room, int playerId, int ticks,
+ChildHandle spawnWorker(const std::string& execPath, uint16_t port, int playerId, int ticks,
                          double deadlineSeconds) {
-	return spawnProcess(execPath,
-	                     { execPath, "--worker", std::to_string(port), room, std::to_string(playerId),
-	                       std::to_string(ticks), std::to_string(deadlineSeconds) });
+	return spawnProcess(execPath, { execPath, "--worker", std::to_string(port), std::to_string(playerId),
+	                                 std::to_string(ticks), std::to_string(deadlineSeconds) });
 }
 
 std::string dirName(const std::string& path) {
@@ -264,14 +262,14 @@ void closeChild(ChildHandle& child) {
 // the deadline are force-killed and counted as failed, so one hung
 // connection can't hang the whole ramp. Players round-robin across
 // shardPorts by playerId - shardPorts.size()==1 is the single-shard case.
-int runRound(const std::string& execPath, const std::vector<uint16_t>& shardPorts, const std::string& room,
-             int playerCount, int ticks, double deadlineSeconds) {
+int runRound(const std::string& execPath, const std::vector<uint16_t>& shardPorts, int playerCount, int ticks,
+             double deadlineSeconds) {
 	std::vector<ChildHandle> children;
 	children.reserve(playerCount);
 	int spawnFailures = 0;
 	for (int i = 0; i < playerCount; i++) {
 		uint16_t port = shardPorts[i % shardPorts.size()];
-		children.push_back(spawnWorker(execPath, port, room, i, ticks, deadlineSeconds));
+		children.push_back(spawnWorker(execPath, port, i, ticks, deadlineSeconds));
 		if (!childIsAlive(children.back())) {
 			spawnFailures++;
 		}
@@ -353,9 +351,8 @@ void runCoordinator(uint16_t port, int rampStart, int maxPlayers, int ticks, dou
 	int roundNum = 0;
 	while (playerCount <= maxPlayers) {
 		roundNum++;
-		std::string room = "load-ramp" + std::to_string(roundNum);
 		auto roundStart = std::chrono::steady_clock::now();
-		int succeeded = runRound(execPath, shardPorts, room, playerCount, ticks, roundDeadline);
+		int succeeded = runRound(execPath, shardPorts, playerCount, ticks, roundDeadline);
 		double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - roundStart).count();
 		printf("round %d: %d players across %zu shard(s), %d succeeded, %.2fs elapsed\n", roundNum, playerCount,
 		       shardPorts.size(), succeeded, elapsed);
@@ -384,11 +381,10 @@ void runCoordinator(uint16_t port, int rampStart, int maxPlayers, int ticks, dou
 int main(int argc, char** argv) {
 	if (argc > 1 && std::string(argv[1]) == "--worker") {
 		uint16_t port = argc > 2 ? static_cast<uint16_t>(atoi(argv[2])) : 4433;
-		std::string room = argc > 3 ? argv[3] : "load-worker";
-		int playerId = argc > 4 ? atoi(argv[4]) : 0;
-		int ticks = argc > 5 ? atoi(argv[5]) : 5;
-		double deadlineSeconds = argc > 6 ? atof(argv[6]) : 10.0;
-		runWorker(port, room, playerId, ticks, deadlineSeconds); // _exit()s internally
+		int playerId = argc > 3 ? atoi(argv[3]) : 0;
+		int ticks = argc > 4 ? atoi(argv[4]) : 5;
+		double deadlineSeconds = argc > 5 ? atof(argv[5]) : 10.0;
+		runWorker(port, playerId, ticks, deadlineSeconds); // _exit()s internally
 	}
 
 	uint16_t serverPort = argc > 1 ? static_cast<uint16_t>(atoi(argv[1])) : 4433;

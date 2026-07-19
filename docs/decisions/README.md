@@ -10,3 +10,4 @@ weft-warp-loop stack. One decision per file, numbered in acceptance order.
 - [0005 — Defer surface patches and the AVBD/Slang solver](0005-defer-surface-patches-and-avbd.md)
 - [0006 — Sandbox a Lisp-1 in libriscv for scripted simulation content, over a native Janet layer](0006-libriscv-sandboxed-s7-lisp-over-native-janet.md)
 - [0007 — Scope the s7/shrubbery toolchain beyond ADR 0006: actor-compiler, Boost.Asio, taskweft, Elixir NIF](0007-s7-shrubbery-toolchain-scope-and-elixir-nif-comparison.md)
+- [0008 — Adopt mas-bandwidth-scale player/world-server constants and the fabric's interest/authority model](0008-fiedler-scale-constants-and-fabric-interest-authority.md)

@@ -139,6 +139,20 @@ the embedding site, not a self-contained guest with no OS underneath.
 Racket is a Lisp-1 like s7 and Janet, but weight, not namespace
 discipline, is what rules it out here.
 
+Shrubbery notation (https://docs.racket-lang.org/shrubbery/index.html),
+the indentation-based grouping layer Rhombus itself is built from, is a
+narrower and separable idea from option 5: its own documentation
+describes it as text-level conventions that "partially group input" and
+"leave further parsing to another layer," independent of Racket's macro
+expander or runtime. A from-scratch shrubbery-style reader sitting in
+front of s7 — translating indentation-based grouping into s7's ordinary
+s-expressions before evaluation — stays compatible with option 3's
+freestanding-build goal, since it touches only how source text is parsed,
+not what runs in the guest. No such reader exists today, for s7 or
+anywhere outside Racket's own reference implementation, so this is
+recorded as a possible follow-up to option 3's surface syntax, not a
+decision this ADR makes.
+
 Option 6 remains the shipping state until this tier is actually built.
 
 ### Consequences

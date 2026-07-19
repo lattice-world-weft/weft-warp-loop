@@ -8,6 +8,7 @@
 -- returned before - the generational guarantee) and full-capacity behavior
 -- are asserted inline, and Room's fanout algebra is checked directly.
 import Fanoutcore.FanoutCore
+import Fanoutcore.Zone
 import Plausible
 
 open Fanoutcore Plausible
@@ -87,6 +88,82 @@ def runOps (capSeed : Nat) (ops : List (Nat × Nat × Nat)) : Bool :=
 def roomFrom (l : List Nat) : Room :=
   l.foldl (fun r c => r.sub c.toUInt64) Room.empty
 
+/-- Exhaustively checks `hilbertIndexOfGrid bits` is a bijection from the
+    `2^bits`-per-axis grid onto `[0, 2^(3*bits))`: every grid cell maps to
+    a distinct index, and every index in range is hit by some cell. Real
+    coverage, not a sample - Skilling's algorithm is well-known, but this
+    verifies *this* Lean4 transcription of it rather than trusting memory.
+    `bits = 3` keeps this small (512 cells) while still exercising every
+    branch of the bit-level loop at least twice. -/
+def hilbertIsBijective (bits : Nat) : Bool := Id.run do
+  let n := 2 ^ bits
+  let total := n * n * n
+  let mut seen : Array Bool := Array.replicate total false
+  for xi in List.range n do
+    for yi in List.range n do
+      for zi in List.range n do
+        let idx := hilbertIndexOfGrid bits xi.toUInt64 yi.toUInt64 zi.toUInt64
+        let idxN := idx.toNat
+        if idxN >= total then
+          return false -- out of range: not a valid index
+        if seen[idxN]! then
+          return false -- collision: not injective
+        seen := seen.set! idxN true
+  return seen.all id -- surjective: every index in range was hit
+
+/-- Builds disjoint, contiguous zone ranges by prefix-summing a list of
+    lengths (each clamped to at least 1 so no range is empty) - disjoint by
+    construction, so `authorityForIndex`/`disjointRanges` are tested
+    against inputs guaranteed to satisfy their precondition rather than
+    relying on independently-random ranges happening not to overlap. -/
+def zonesFromLengths (lens : List Nat) : Array Zone :=
+  let lens := lens.map (· + 1)
+  let starts := (lens.foldl (fun (acc : List Nat × Nat) len => (acc.1 ++ [acc.2], acc.2 + len)) ([], 0)).1
+  (List.zip starts lens).toArray.map fun (s, len) =>
+    { range := { start := s.toUInt64, stop := (s + len).toUInt64 }, entities := #[] }
+
+/-- Picks an index within the total span of `zonesFromLengths lens` (or 0
+    for the degenerate empty-`lens` case) from `seed`. -/
+def idxFromSeed (lens : List Nat) (seed : Nat) : UInt64 :=
+  let zones := zonesFromLengths lens
+  if h : zones.size > 0 then
+    let totalSpan := (zones[zones.size - 1]).range.stop
+    (seed % totalSpan.toNat.max 1).toUInt64
+  else 0
+
+/-- True iff `authorityForIndex`, given disjoint zones built from `lens`,
+    finds a zone whose range actually contains the picked index - vacuously
+    true for the degenerate empty-`lens` case. -/
+def authorityContainsCheck (lens : List Nat) (seed : Nat) : Bool :=
+  let zones := zonesFromLengths lens
+  if zones.size == 0 then true
+  else
+    let idx := idxFromSeed lens seed
+    match authorityForIndex zones idx with
+    | none => false -- every idx < totalSpan must land in some zone, by construction
+    | some i => (zones[i]!).range.contains idx
+
+/-- True iff `authorityForIndex`'s answer is the *unique* zone containing
+    the picked index, given disjoint zones built from `lens`. -/
+def authorityUniqueCheck (lens : List Nat) (seed : Nat) : Bool :=
+  let zones := zonesFromLengths lens
+  if zones.size == 0 then true
+  else
+    let idx := idxFromSeed lens seed
+    match authorityForIndex zones idx with
+    | none => true
+    | some i => ((List.range zones.size).filter fun j => (zones[j]!).range.contains idx) == [i]
+
+/-- True iff `adjacentZones`, given zones built from `lens`, never includes
+    the zone whose neighbours were asked for - vacuously true when `lens`
+    is empty. -/
+def adjacentExcludesSelfCheck (lens : List Nat) (seed : Nat) : Bool :=
+  let zones := zonesFromLengths lens
+  if zones.size == 0 then true
+  else
+    let zoneIdx := seed % zones.size
+    !(adjacentZones zones zoneIdx).contains zoneIdx
+
 /-- Run one property; print the counterexample and exit non-zero on failure. -/
 def runCheck (name : String) (p : Prop) [Testable p] (cfg : Configuration) : IO Unit := do
   IO.println s!"prop: {name}"
@@ -136,5 +213,29 @@ def main : IO Unit := do
      NamedBinder "h" <|
       c.toUInt64 ≠ p.toUInt64 →
         (((roomFrom l).sub c.toUInt64).targets p.toUInt64).contains c.toUInt64 = true) cfg
+
+  IO.println "prop: hilbertIndexOfGrid is a bijection over a small exhaustive grid (bits = 3)"
+  if !hilbertIsBijective 3 then
+    IO.eprintln "  FALSIFIED: hilbertIndexOfGrid 3 is not a bijection over the 8x8x8 grid"
+    IO.Process.exit 1
+
+  runCheck "zones built from contiguous lengths are always disjoint"
+    (NamedBinder "lens" <| ∀ (lens : List Nat),
+      disjointRanges ((zonesFromLengths lens).map Zone.range) = true) cfg
+
+  runCheck "authorityForIndex, given disjoint zones, finds a zone whose range actually contains the index"
+    (NamedBinder "lens" <| ∀ (lens : List Nat),
+     NamedBinder "seed" <| ∀ (seed : Nat),
+      authorityContainsCheck lens seed = true) cfg
+
+  runCheck "authorityForIndex's answer is the *unique* zone containing the index, given disjoint zones"
+    (NamedBinder "lens" <| ∀ (lens : List Nat),
+     NamedBinder "seed" <| ∀ (seed : Nat),
+      authorityUniqueCheck lens seed = true) cfg
+
+  runCheck "adjacentZones never includes the zone itself"
+    (NamedBinder "lens" <| ∀ (lens : List Nat),
+     NamedBinder "seed" <| ∀ (seed : Nat),
+      adjacentExcludesSelfCheck lens seed = true) cfg
 
   IO.println "ALL PROPERTY TESTS PASSED"

@@ -8,7 +8,7 @@
 // supervisor daemon: https://github.com/v-sekai/cockroach,
 // Oxide Computer's maintained CockroachDB fork, cited as the reference).
 //
-//   fanout_load_client <port> <rampStart> <maxPlayers> <ticks> <roundDeadline>
+//   fanout_load_client <port> <rampStart> <maxPlayers> <ticks> <roundDeadline> [shardCount]
 //     Coordinator role (default). Ramps concurrent player count, doubling
 //     on success, by relaunching this same binary as a child OS process
 //     per player each round (see spawnWorker/waitForWorkers below) and
@@ -21,6 +21,17 @@
 //     deployment already encodes (one fdbserver process per core,
 //     supervised by fdbmonitor) - this just gets there via relaunching
 //     one binary instead of a second supervisor tool.
+//
+//     shardCount > 1 additionally spawns that many picoquic_fanout_server
+//     processes (ports <port>..<port>+shardCount-1, sibling binary in the
+//     same build directory, unmodified - it already takes its port as a
+//     plain CLI argument, so no server-side change was needed for this)
+//     and round-robins players across them by playerId. This is the raw
+//     "N independent shards" fabric shape: each shard's own room/topic
+//     space is disjoint (fanout-core's flat broadcast never crosses
+//     shards), not the Hilbert-curve interest/authority model ADR 0008
+//     actually calls for - proving raw connection capacity across a
+//     fabric, not proving the fabric's eventual real spatial semantics.
 //
 //   fanout_load_client --worker <port> <room> <playerId> <ticks> <deadlineSeconds>
 //     Worker role. Runs exactly one simulated player (runOnePlayer,
@@ -124,15 +135,10 @@ std::string quoteArg(const std::string& arg) {
 	return "\"" + arg + "\"";
 }
 
-ChildHandle spawnWorker(const std::string& execPath, uint16_t port, const std::string& room, int playerId, int ticks,
-                         double deadlineSeconds) {
-	std::vector<std::string> args = { execPath,
-		                               "--worker",
-		                               std::to_string(port),
-		                               room,
-		                               std::to_string(playerId),
-		                               std::to_string(ticks),
-		                               std::to_string(deadlineSeconds) };
+// Shared by spawnWorker (relaunches this same binary) and spawnShardServer
+// (launches the sibling picoquic_fanout_server binary) - both just build a
+// different argv for an otherwise identical CreateProcess/posix_spawn call.
+ChildHandle spawnProcess(const std::string& execPath, const std::vector<std::string>& args) {
 	ChildHandle child;
 #if defined(_WIN32)
 	std::string cmdLine;
@@ -152,8 +158,8 @@ ChildHandle spawnWorker(const std::string& execPath, uint16_t port, const std::s
 	}
 #else
 	std::vector<char*> argv;
-	for (std::string& a : args) {
-		argv.push_back(a.data());
+	for (const std::string& a : args) {
+		argv.push_back(const_cast<char*>(a.c_str()));
 	}
 	argv.push_back(nullptr);
 	pid_t pid = -1;
@@ -162,6 +168,36 @@ ChildHandle spawnWorker(const std::string& execPath, uint16_t port, const std::s
 	}
 #endif
 	return child;
+}
+
+ChildHandle spawnWorker(const std::string& execPath, uint16_t port, const std::string& room, int playerId, int ticks,
+                         double deadlineSeconds) {
+	return spawnProcess(execPath,
+	                     { execPath, "--worker", std::to_string(port), room, std::to_string(playerId),
+	                       std::to_string(ticks), std::to_string(deadlineSeconds) });
+}
+
+std::string dirName(const std::string& path) {
+	size_t pos = path.find_last_of("/\\");
+	return pos == std::string::npos ? "." : path.substr(0, pos);
+}
+
+// picoquic_fanout_server is a sibling binary in the same build directory,
+// unmodified - it already takes its port as a plain CLI argument (see
+// examples/fanout_server_main.actor.cpp), so no server-side change was
+// needed to make it launchable as a shard. Cert/key paths are resolved
+// relative to the build directory rather than relying on the child's
+// working directory, since spawnProcess doesn't set one.
+ChildHandle spawnShardServer(const std::string& loadClientExecPath, uint16_t port) {
+	std::string buildDir = dirName(loadClientExecPath);
+#if defined(_WIN32)
+	std::string serverExec = buildDir + "\\picoquic_fanout_server.exe";
+#else
+	std::string serverExec = buildDir + "/picoquic_fanout_server";
+#endif
+	std::string certPath = buildDir + "/../thirdparty/picoquic/certs/secp256r1/cert.pem";
+	std::string keyPath = buildDir + "/../thirdparty/picoquic/certs/secp256r1/key.pem";
+	return spawnProcess(serverExec, { serverExec, std::to_string(port), certPath, keyPath });
 }
 
 bool childIsAlive(const ChildHandle& child) {
@@ -226,13 +262,15 @@ void closeChild(ChildHandle& child) {
 // Spawns playerCount workers and waits for all of them, up to
 // deadlineSeconds total for the round (not per child) - stragglers past
 // the deadline are force-killed and counted as failed, so one hung
-// connection can't hang the whole ramp.
-int runRound(const std::string& execPath, uint16_t port, const std::string& room, int playerCount, int ticks,
-             double deadlineSeconds) {
+// connection can't hang the whole ramp. Players round-robin across
+// shardPorts by playerId - shardPorts.size()==1 is the single-shard case.
+int runRound(const std::string& execPath, const std::vector<uint16_t>& shardPorts, const std::string& room,
+             int playerCount, int ticks, double deadlineSeconds) {
 	std::vector<ChildHandle> children;
 	children.reserve(playerCount);
 	int spawnFailures = 0;
 	for (int i = 0; i < playerCount; i++) {
+		uint16_t port = shardPorts[i % shardPorts.size()];
 		children.push_back(spawnWorker(execPath, port, room, i, ticks, deadlineSeconds));
 		if (!childIsAlive(children.back())) {
 			spawnFailures++;
@@ -281,9 +319,34 @@ int runRound(const std::string& execPath, uint16_t port, const std::string& room
 	return successCount;
 }
 
-void runCoordinator(uint16_t port, int rampStart, int maxPlayers, int ticks, double roundDeadline) {
+void runCoordinator(uint16_t port, int rampStart, int maxPlayers, int ticks, double roundDeadline, int shardCount) {
 	platformInit();
 	std::string execPath = getExecPath();
+
+	std::vector<ChildHandle> shardServers;
+	std::vector<uint16_t> shardPorts;
+	if (shardCount <= 1) {
+		shardPorts.push_back(port);
+	} else {
+		printf("spawning %d shard servers on ports %d..%d\n", shardCount, port, port + shardCount - 1);
+		fflush(stdout);
+		for (int s = 0; s < shardCount; s++) {
+			uint16_t shardPort = static_cast<uint16_t>(port + s);
+			ChildHandle server = spawnShardServer(execPath, shardPort);
+			if (!childIsAlive(server)) {
+				fprintf(stderr, "[fatal] failed to spawn shard server on port %d\n", shardPort);
+				fflush(stderr);
+				continue;
+			}
+			shardServers.push_back(server);
+			shardPorts.push_back(shardPort);
+		}
+		// No health-check handshake here - a fixed settle time before the
+		// first round, matching the gap this session's own manual testing
+		// already used between starting picoquic_fanout_server and running
+		// a client against it.
+		std::this_thread::sleep_for(std::chrono::milliseconds(500));
+	}
 
 	int playerCount = rampStart;
 	int lastGood = 0;
@@ -292,9 +355,10 @@ void runCoordinator(uint16_t port, int rampStart, int maxPlayers, int ticks, dou
 		roundNum++;
 		std::string room = "load-ramp" + std::to_string(roundNum);
 		auto roundStart = std::chrono::steady_clock::now();
-		int succeeded = runRound(execPath, port, room, playerCount, ticks, roundDeadline);
+		int succeeded = runRound(execPath, shardPorts, room, playerCount, ticks, roundDeadline);
 		double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - roundStart).count();
-		printf("round %d: %d players, %d succeeded, %.2fs elapsed\n", roundNum, playerCount, succeeded, elapsed);
+		printf("round %d: %d players across %zu shard(s), %d succeeded, %.2fs elapsed\n", roundNum, playerCount,
+		       shardPorts.size(), succeeded, elapsed);
 		fflush(stdout);
 		double failureRate = 1.0 - (static_cast<double>(succeeded) / playerCount);
 		if (failureRate > 0.1) {
@@ -305,8 +369,14 @@ void runCoordinator(uint16_t port, int rampStart, int maxPlayers, int ticks, dou
 		lastGood = playerCount;
 		playerCount *= 2;
 	}
-	printf("max sustained concurrent players (separate OS processes): %d\n", lastGood);
+	printf("max sustained concurrent players (%zu shard(s), separate OS processes): %d\n", shardPorts.size(),
+	       lastGood);
 	fflush(stdout);
+
+	for (ChildHandle& server : shardServers) {
+		forceKill(server);
+		closeChild(server);
+	}
 }
 
 } // namespace
@@ -326,6 +396,7 @@ int main(int argc, char** argv) {
 	int maxPlayers = argc > 3 ? atoi(argv[3]) : 5000;
 	int ticks = argc > 4 ? atoi(argv[4]) : 5;
 	double roundDeadline = argc > 5 ? atof(argv[5]) : 10.0;
-	runCoordinator(serverPort, rampStart, maxPlayers, ticks, roundDeadline);
+	int shardCount = argc > 6 ? atoi(argv[6]) : 1;
+	runCoordinator(serverPort, rampStart, maxPlayers, ticks, roundDeadline, shardCount);
 	return 0;
 }

@@ -70,7 +70,10 @@ fit a sandboxed, fuel-bounded call boundary well.
 4. AtomVM (https://github.com/atomvm/atomvm), a from-scratch minimal BEAM
    implementation for constrained hardware, paired with a Lisp-1 BEAM
    language.
-5. Status quo: no embedded scripting language.
+5. libriscv embedded in Flow, Racket compiled to RISC-V as the guest
+   language, authored in Rhombus (https://docs.racket-lang.org/rhombus-guide/index.html),
+   Racket's non-parenthesized surface syntax.
+6. Status quo: no embedded scripting language.
 
 ## Decision Outcome
 
@@ -121,7 +124,22 @@ determinism-critical path — it only duplicates the boundary the README
 already draws for Elixir/OTP, a peer process connecting to Flow over
 HTTP/3, never something spawned by or embedded in the Flow process.
 
-Option 5 remains the shipping state until this tier is actually built.
+Option 5 is investigated and rejected on the same footprint grounds as
+option 2, more severely. Rhombus is a surface syntax built on Racket —
+"Rhombus is built on Racket, and it is extensible in the same way as
+Racket, but Rhombus uses a more conventional expression syntax" — not an
+independent implementation; it carries the full Racket/Chez Scheme
+runtime underneath (its own GC, JIT/AOT compilation pipeline, module and
+bytecode loader), the same way Rhombus code still runs on Racket's `raco`
+toolchain. Nothing in Racket's or Rhombus's documentation describes
+static-linking into a minimal freestanding binary the way s7 and Janet
+both do; Racket's own embedding guide assumes a full Racket runtime
+environment (`scheme_dynamic_require`, `.zo` bytecode loading) present at
+the embedding site, not a self-contained guest with no OS underneath.
+Racket is a Lisp-1 like s7 and Janet, but weight, not namespace
+discipline, is what rules it out here.
+
+Option 6 remains the shipping state until this tier is actually built.
 
 ### Consequences
 

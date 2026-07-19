@@ -9,6 +9,7 @@
 -- are asserted inline, and Room's fanout algebra is checked directly.
 import Fanoutcore.FanoutCore
 import Fanoutcore.Zone
+import Fanoutcore.ZoneDispatch
 import Plausible
 
 open Fanoutcore Plausible
@@ -164,6 +165,84 @@ def adjacentExcludesSelfCheck (lens : List Nat) (seed : Nat) : Bool :=
     let zoneIdx := seed % zones.size
     !(adjacentZones zones zoneIdx).contains zoneIdx
 
+/-- Builds a `ZoneWorld` with disjoint, contiguous zone ranges from `lens`
+    (mirroring `zonesFromLengths`, but through the real alloc path so
+    `ZoneWorld`'s SlotMap-backed identity is exercised, not just the
+    plain-array zone logic `zonesFromLengths` feeds directly). -/
+def zoneWorldFromLengths (bits : Nat) (lens : List Nat) : ZoneWorld := Id.run do
+  let lens := lens.map (· + 1)
+  let starts := (lens.foldl (fun (acc : List Nat × Nat) len => (acc.1 ++ [acc.2], acc.2 + len)) ([], 0)).1
+  let mut w : ZoneWorld := ZoneWorld.empty (lens.length + 1) bits
+  for (s, len) in List.zip starts lens do
+    let range : ZoneRange := { start := s.toUInt64, stop := (s + len).toUInt64 }
+    match w.allocZone range with
+    | some (w', _) => w := w'
+    | none => pure ()
+  return w
+
+/-- The total curve span covered by `w`'s live zones (the largest `stop`
+    among them, or 0 if `w` has no zones) - used to fold an arbitrary test
+    seed into a curve index guaranteed to land inside *some* zone, the
+    same way `idxFromSeed` does for the plain-array zone tests above. -/
+def Fanoutcore.ZoneWorld.totalSpan (w : ZoneWorld) : UInt64 :=
+  (w.liveZones.map fun (_, z) => z.range.stop).foldl max 0
+
+/-- True iff, after moving `connId` to `idx`, that zone's authority query
+    for `idx` reports a zone whose live entities include `connId` -
+    vacuously true when `lens` is empty (no zone can own anything). -/
+def moveThenAuthorityContainsCheck (lens : List Nat) (connId idx : Nat) : Bool :=
+  let w := zoneWorldFromLengths 8 lens
+  if w.liveZones.size == 0 then true
+  else
+    let boundedIdx := (idx.toUInt64 % (max w.totalSpan 1))
+    let w' := w.moveEntityToIndex connId.toUInt64 boundedIdx
+    match w'.authorityForIndex boundedIdx with
+    | none => false -- every idx < totalSpan must land in some zone, by construction
+    | some zoneId =>
+      match w'.zones.find zoneId with
+      | none => false
+      | some zone => zone.entities.contains connId.toUInt64
+
+/-- True iff moving an entity to a *different* zone removes it from its
+    previous zone's membership - vacuously true if either index has no
+    authority zone, or both land in the same zone (nothing to migrate). -/
+def migrationLeavesOldZoneCheck (lens : List Nat) (connId idxA idxB : Nat) : Bool :=
+  let w := zoneWorldFromLengths 8 lens
+  let w1 := w.moveEntityToIndex connId.toUInt64 idxA.toUInt64
+  match w1.authorityForIndex idxA.toUInt64, w1.authorityForIndex idxB.toUInt64 with
+  | some zoneAId, some zoneBId =>
+    if zoneAId == zoneBId then true
+    else
+      let w2 := w1.moveEntityToIndex connId.toUInt64 idxB.toUInt64
+      match w2.zones.find zoneAId with
+      | none => true
+      | some zoneA => !zoneA.entities.contains connId.toUInt64
+  | _, _ => true
+
+/-- True iff `targetsForIndex` never includes the publisher itself. -/
+def targetsExcludePublisherCheck (lens : List Nat) (connId idx : Nat) : Bool :=
+  let w := zoneWorldFromLengths 8 lens
+  let w' := w.moveEntityToIndex connId.toUInt64 idx.toUInt64
+  !((w'.targetsForIndex connId.toUInt64 idx.toUInt64).contains connId.toUInt64)
+
+/-- True iff two entities placed at the *same* curve index (hence the same
+    zone) are mutual fanout targets. -/
+def sameZoneTargetsEachOtherCheck (lens : List Nat) (connA connB idx : Nat) : Bool :=
+  let w := zoneWorldFromLengths 8 lens
+  if w.liveZones.size == 0 || connA == connB then true
+  else
+    let boundedIdx := (idx.toUInt64 % (max w.totalSpan 1))
+    let w1 := w.moveEntityToIndex connA.toUInt64 boundedIdx
+    let w2 := w1.moveEntityToIndex connB.toUInt64 boundedIdx
+    (w2.targetsForIndex connA.toUInt64 boundedIdx).contains connB.toUInt64
+
+/-- True iff, after `removeEntity`, the connId is gone from every zone. -/
+def removeEntityCheck (lens : List Nat) (connId idx : Nat) : Bool :=
+  let w := zoneWorldFromLengths 8 lens
+  let w1 := w.moveEntityToIndex connId.toUInt64 idx.toUInt64
+  let w2 := w1.removeEntity connId.toUInt64
+  w2.liveZones.all fun (_, z) => !z.entities.contains connId.toUInt64
+
 /-- Run one property; print the counterexample and exit non-zero on failure. -/
 def runCheck (name : String) (p : Prop) [Testable p] (cfg : Configuration) : IO Unit := do
   IO.println s!"prop: {name}"
@@ -237,5 +316,37 @@ def main : IO Unit := do
     (NamedBinder "lens" <| ∀ (lens : List Nat),
      NamedBinder "seed" <| ∀ (seed : Nat),
       adjacentExcludesSelfCheck lens seed = true) cfg
+
+  runCheck "moveEntityToIndex places the entity in the zone now authoritative for that index"
+    (NamedBinder "lens" <| ∀ (lens : List Nat),
+     NamedBinder "connId" <| ∀ (connId : Nat),
+     NamedBinder "idx" <| ∀ (idx : Nat),
+      moveThenAuthorityContainsCheck lens connId idx = true) cfg
+
+  runCheck "migrating to a different zone removes the entity from its previous zone"
+    (NamedBinder "lens" <| ∀ (lens : List Nat),
+     NamedBinder "connId" <| ∀ (connId : Nat),
+     NamedBinder "idxA" <| ∀ (idxA : Nat),
+     NamedBinder "idxB" <| ∀ (idxB : Nat),
+      migrationLeavesOldZoneCheck lens connId idxA idxB = true) cfg
+
+  runCheck "targetsForIndex never includes the publisher itself"
+    (NamedBinder "lens" <| ∀ (lens : List Nat),
+     NamedBinder "connId" <| ∀ (connId : Nat),
+     NamedBinder "idx" <| ∀ (idx : Nat),
+      targetsExcludePublisherCheck lens connId idx = true) cfg
+
+  runCheck "two entities in the same zone are mutual fanout targets"
+    (NamedBinder "lens" <| ∀ (lens : List Nat),
+     NamedBinder "connA" <| ∀ (connA : Nat),
+     NamedBinder "connB" <| ∀ (connB : Nat),
+     NamedBinder "idx" <| ∀ (idx : Nat),
+      sameZoneTargetsEachOtherCheck lens connA connB idx = true) cfg
+
+  runCheck "removeEntity clears the connId from every zone"
+    (NamedBinder "lens" <| ∀ (lens : List Nat),
+     NamedBinder "connId" <| ∀ (connId : Nat),
+     NamedBinder "idx" <| ∀ (idx : Nat),
+      removeEntityCheck lens connId idx = true) cfg
 
   IO.println "ALL PROPERTY TESTS PASSED"

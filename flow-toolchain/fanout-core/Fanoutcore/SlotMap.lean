@@ -42,6 +42,20 @@ def SlotMap.find (m : SlotMap α) (id : Id) : Option α :=
     if g == id.generation then v else none
   else none
 
+/-- Every currently-occupied slot, paired with the `Id` that `find` would
+    need to look it back up. Callers that need a plain, densely-indexed
+    snapshot of live entries (e.g. running a spatial query over all live
+    zones) build one from this rather than the map growing an indexing
+    scheme of its own - the generational slots stay the only source of
+    truth for "is this id still live". -/
+def SlotMap.liveEntries (m : SlotMap α) : Array (Id × α) := Id.run do
+  let mut result : Array (Id × α) := #[]
+  for idx in List.range m.slots.size do
+    let (g, v) := m.slots[idx]!
+    if let some val := v then
+      result := result.push ({ index := UInt32.ofNat idx, generation := g }, val)
+  return result
+
 def SlotMap.alloc (m : SlotMap α) (v : α) : Option (SlotMap α × Id) :=
   match m.freeList.back? with
   | none => none

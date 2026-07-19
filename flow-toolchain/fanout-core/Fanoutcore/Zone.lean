@@ -144,6 +144,12 @@ structure Zone where
   entities : Array UInt64
   deriving Repr, Inhabited
 
+def Zone.sub (z : Zone) (connId : UInt64) : Zone :=
+  if z.entities.contains connId then z else { z with entities := z.entities.push connId }
+
+def Zone.unsub (z : Zone) (connId : UInt64) : Zone :=
+  { z with entities := z.entities.filter (· != connId) }
+
 /-- The zone whose range contains curve index `idx` is authoritative for
     whatever sits there. `none` if no zone's range covers that index - a
     legitimate state (e.g. a range not yet assigned by gossip), not an

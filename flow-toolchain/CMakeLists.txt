@@ -447,6 +447,7 @@ set(FANOUT_CORE_GEN_C
   "${FANOUT_CORE_IR_DIR}/Fanoutcore/SlotMap.c"
   "${FANOUT_CORE_IR_DIR}/Fanoutcore/FanoutCore.c"
   "${FANOUT_CORE_IR_DIR}/Fanoutcore/Zone.c"
+  "${FANOUT_CORE_IR_DIR}/Fanoutcore/ZoneDispatch.c"
   "${FANOUT_CORE_IR_DIR}/Fanoutcore/Ffi.c")
 file(GLOB FANOUT_CORE_LEAN_SRCS CONFIGURE_DEPENDS
   "${FANOUT_CORE_DIR}/*.lean" "${FANOUT_CORE_DIR}/Fanoutcore/*.lean")

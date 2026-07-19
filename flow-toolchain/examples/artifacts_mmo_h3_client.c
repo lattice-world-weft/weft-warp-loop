@@ -50,6 +50,8 @@
 #include <h3zero_common.h>
 #include <democlient.h>
 
+#include "artifacts_mmo_h3_client.h"
+
 static uint8_t *build_authenticated_request(
     uint8_t *buffer, size_t max_bytes,
     const char *method, const char *path, const char *host,
@@ -126,6 +128,7 @@ typedef struct st_client_loop_ctx_t {
 	const char *bearer_token;
 	const uint8_t *body;
 	size_t body_len;
+	const char *response_path;
 } client_loop_ctx_t;
 
 static int send_authenticated_request(client_loop_ctx_t *lc) {
@@ -148,7 +151,7 @@ static int send_authenticated_request(client_loop_ctx_t *lc) {
 	stream_ctx->stream_id = 0;
 	stream_ctx->is_open = 1;
 	if (!lc->demo_ctx->no_disk) {
-		stream_ctx->f_name = picoquic_string_duplicate("authenticated_response.bin");
+		stream_ctx->f_name = picoquic_string_duplicate(lc->response_path);
 	}
 	lc->demo_ctx->nb_open_streams++;
 	lc->demo_ctx->nb_client_streams++;
@@ -218,6 +221,109 @@ static int client_loop_cb(picoquic_quic_t *quic, picoquic_packet_loop_cb_enum cb
 	return 0;
 }
 
+/* The reusable entry point: runs one authenticated request to completion
+ * and returns the response body (read back from the file
+ * picoquic_demo_client_callback wrote it to - reusing that proven
+ * receive path rather than accumulating bytes in memory ourselves).
+ * Not thread-safe / not reentrant across concurrent calls (a fixed
+ * per-call temp file name) - fine for this agent's one-request-at-a-time
+ * usage; a concurrent caller would need a unique name per call. */
+char *artifacts_mmo_h3_request(const char *host, int port, const char *cert_root_pem,
+	const char *method, const char *path, const char *bearer_token,
+	const char *body) {
+	char *result = NULL;
+	const char *response_path = "artifacts_mmo_h3_response.bin";
+
+#ifdef _WINDOWS
+	WSADATA wsaData;
+	(void)WSA_START(MAKEWORD(2, 2), &wsaData);
+#endif
+
+	struct sockaddr_storage server_address;
+	int is_name = 0;
+	if (picoquic_get_server_address(host, port, &server_address, &is_name) != 0) {
+		fprintf(stderr, "Cannot resolve %s:%d\n", host, port);
+		return NULL;
+	}
+
+	uint8_t reset_seed[PICOQUIC_RESET_SECRET_SIZE];
+	memset(reset_seed, 0x42, sizeof(reset_seed));
+	uint64_t current_time = picoquic_current_time();
+
+	picoquic_quic_t *qclient = picoquic_create(1, NULL, NULL, cert_root_pem, "h3",
+		NULL, NULL, NULL, NULL, reset_seed, current_time, NULL, NULL, NULL, 0);
+	if (qclient == NULL) {
+		fprintf(stderr, "picoquic_create failed.\n");
+		return NULL;
+	}
+
+	picoquic_cnx_t *cnx_client = picoquic_create_cnx(qclient,
+		picoquic_null_connection_id, picoquic_null_connection_id,
+		(struct sockaddr *)&server_address, current_time, 0, host, "h3", 1);
+	if (cnx_client == NULL) {
+		fprintf(stderr, "picoquic_create_cnx failed.\n");
+		picoquic_free(qclient);
+		return NULL;
+	}
+
+	picoquic_demo_callback_ctx_t demo_ctx = {0};
+	picoquic_demo_client_initialize_context(&demo_ctx, NULL, 0, "h3", 0, 0);
+	demo_ctx.out_dir = ".";
+
+	picoquic_set_callback(cnx_client, picoquic_demo_client_callback, &demo_ctx);
+	cnx_client->grease_transport_parameters = 1;
+	cnx_client->local_parameters.enable_time_stamp = 3;
+
+	if (picoquic_start_client_cnx(cnx_client) != 0) {
+		fprintf(stderr, "picoquic_start_client_cnx failed.\n");
+		picoquic_demo_client_delete_context(&demo_ctx);
+		picoquic_free(qclient);
+		return NULL;
+	}
+
+	client_loop_ctx_t lc = {0};
+	lc.cnx_client = cnx_client;
+	lc.demo_ctx = &demo_ctx;
+	lc.method = method;
+	lc.path = path;
+	lc.bearer_token = bearer_token;
+	lc.body = (const uint8_t *)body;
+	lc.body_len = body ? strlen(body) : 0;
+	lc.response_path = response_path;
+
+	picoquic_packet_loop_param_t param = {0};
+	param.local_af = server_address.ss_family;
+
+	int ret = picoquic_packet_loop_v2(qclient, &param, client_loop_cb, &lc);
+	fprintf(stdout, "Client exit with code = %d\n", ret);
+
+	if (ret == 0) {
+		FILE *f = picoquic_file_open(response_path, "rb");
+		if (f != NULL) {
+			fseek(f, 0, SEEK_END);
+			long len = ftell(f);
+			fseek(f, 0, SEEK_SET);
+			if (len >= 0) {
+				result = (char *)malloc((size_t)len + 1);
+				if (result != NULL) {
+					size_t n = fread(result, 1, (size_t)len, f);
+					result[n] = '\0';
+				}
+			}
+			fclose(f);
+			remove(response_path);
+		}
+	}
+
+	picoquic_demo_client_delete_context(&demo_ctx);
+	picoquic_free(qclient);
+	return result;
+}
+
+/* This file is also linked into s7agent (artifacts_mmo_h3_request() is
+ * the reusable entry point that FFI wraps) - define
+ * ARTIFACTS_MMO_H3_CLIENT_NO_MAIN there to avoid a duplicate main(). */
+#ifndef ARTIFACTS_MMO_H3_CLIENT_NO_MAIN
 int main(int argc, char **argv) {
 	if (argc < 6) {
 		fprintf(stderr, "usage: %s host port cert_root.pem GET|POST path [body]\n", argv[0]);
@@ -236,66 +342,14 @@ int main(int argc, char **argv) {
 		return 1;
 	}
 
-#ifdef _WINDOWS
-	WSADATA wsaData;
-	(void)WSA_START(MAKEWORD(2, 2), &wsaData);
-#endif
-
-	struct sockaddr_storage server_address;
-	int is_name = 0;
-	if (picoquic_get_server_address(host, port, &server_address, &is_name) != 0) {
-		fprintf(stderr, "Cannot resolve %s:%d\n", host, port);
+	char *response = artifacts_mmo_h3_request(host, port, cert_root, method, path, token, body);
+	if (response == NULL) {
+		fprintf(stderr, "Request failed.\n");
 		return 1;
 	}
-
-	uint8_t reset_seed[PICOQUIC_RESET_SECRET_SIZE];
-	memset(reset_seed, 0x42, sizeof(reset_seed));
-	uint64_t current_time = picoquic_current_time();
-
-	picoquic_quic_t *qclient = picoquic_create(1, NULL, NULL, cert_root, "h3",
-		NULL, NULL, NULL, NULL, reset_seed, current_time, NULL, NULL, NULL, 0);
-	if (qclient == NULL) {
-		fprintf(stderr, "picoquic_create failed.\n");
-		return 1;
-	}
-
-	picoquic_cnx_t *cnx_client = picoquic_create_cnx(qclient,
-		picoquic_null_connection_id, picoquic_null_connection_id,
-		(struct sockaddr *)&server_address, current_time, 0, host, "h3", 1);
-	if (cnx_client == NULL) {
-		fprintf(stderr, "picoquic_create_cnx failed.\n");
-		return 1;
-	}
-
-	picoquic_demo_callback_ctx_t demo_ctx = {0};
-	picoquic_demo_client_initialize_context(&demo_ctx, NULL, 0, "h3", 0, 0);
-	demo_ctx.out_dir = ".";
-
-	picoquic_set_callback(cnx_client, picoquic_demo_client_callback, &demo_ctx);
-	cnx_client->grease_transport_parameters = 1;
-	cnx_client->local_parameters.enable_time_stamp = 3;
-
-	if (picoquic_start_client_cnx(cnx_client) != 0) {
-		fprintf(stderr, "picoquic_start_client_cnx failed.\n");
-		return 1;
-	}
-
-	client_loop_ctx_t lc = {0};
-	lc.cnx_client = cnx_client;
-	lc.demo_ctx = &demo_ctx;
-	lc.method = method;
-	lc.path = path;
-	lc.bearer_token = token;
-	lc.body = (const uint8_t *)body;
-	lc.body_len = body ? strlen(body) : 0;
-
-	picoquic_packet_loop_param_t param = {0};
-	param.local_af = server_address.ss_family;
-
-	int ret = picoquic_packet_loop_v2(qclient, &param, client_loop_cb, &lc);
-
-	fprintf(stdout, "Client exit with code = %d\n", ret);
-	picoquic_demo_client_delete_context(&demo_ctx);
-	picoquic_free(qclient);
-	return ret;
+	fputs(response, stdout);
+	fputc('\n', stdout);
+	free(response);
+	return 0;
 }
+#endif /* ARTIFACTS_MMO_H3_CLIENT_NO_MAIN */

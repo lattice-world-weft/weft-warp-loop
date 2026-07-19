@@ -27,10 +27,26 @@ Accepted (a future PR; not yet fully implemented). Implementation status:
   vs. a host-supplied deterministic tick), and `math.h` (~23
   transcendental functions — the real remaining work). No code written
   yet.
-- Not started: the shrubbery-style reader, the VMCALL boundary into a
-  Flow actor, the syscall allowlist, and the FP-stress byte-compare
-  re-verification — all depend on a working s7 guest binary existing
-  first.
+- Designed, not yet buildable: the syscall allowlist (default-deny,
+  `exit`/`exit_group` only) and the VMCALL boundary shape, in
+  `flow-toolchain/examples/riscv_guest_host_interface.md`. Grounded in
+  the vendored libriscv API, but nothing here compiles yet — there is no
+  guest binary to link against.
+- Open, unresolved: item 7's fuel budget per call site. This repo's Flow
+  runtime has no existing fixed-tick/timestep concept to size a budget
+  against (`flow-toolchain/flow/` is a pure event-driven actor runtime,
+  not a fixed-timestep loop) — sizing this needs a product decision
+  (how expensive a single scripted decision is allowed to be), not
+  something derivable from the codebase as it stands.
+- Decided: the devtool-only role (REPL against `Fanoutcore/Ffi.lean`/
+  `SketchCore/Ffi.lean`, the ADR 0002 cert-mint script) is served by a
+  native host build of the same s7 + shrubbery-reader source, linked
+  against the ordinary system libc — not Janet, and not a second
+  language. See the Decision Outcome's note on option 1. Not
+  implemented yet.
+- Not started: the shrubbery-style reader itself, and the FP-stress
+  byte-compare re-verification — both depend on a working s7 guest
+  binary existing first (which depends on the libc work above).
 
 ## Context and Problem Statement
 
@@ -143,13 +159,20 @@ those things by construction. s7 carries no such subsystems to remove.
 Janet stays available as a fallback guest language if ecosystem size or
 existing familiarity outweighs footprint later.
 
-Option 1 answers a narrower, still-real question — a native Janet layer
-for dev/debug REPL tooling against the fanout/sketch FFI, and for the
-not-yet-written cert-mint script from ADR 0002 — but it does not put any
-scripted logic on the determinism-critical path, which option 3 does.
-That devtool-only role is not decided in this ADR and stays open as
-separate future work, independent of whichever guest language option 3
-uses.
+Option 1 (a native scripting layer for dev/debug REPL tooling against the
+fanout/sketch FFI, and for the not-yet-written cert-mint script from ADR
+0002) answers a narrower, still-real question, but it does not put any
+scripted logic on the determinism-critical path, which option 3 does. It
+is not Janet, though: this devtool role is served by the same source —
+s7 plus the shrubbery-style reader — built natively for the dev machine
+against the system's ordinary libc, rather than cross-compiled to a
+freestanding RISC-V guest against the hand-built minimal libc option 3
+needs. One language and one surface syntax across both roles, two build
+targets: a native host binary (devtools, linked normally, no sandbox
+needed since nothing here touches replicated state) and a freestanding
+RISC-V guest (option 3's sandboxed tier). This removes Janet from the
+picture entirely, superseding the earlier framing in the Context section
+above. The native devtool build is not implemented in this pass.
 
 Option 4 is investigated and rejected on two independent grounds. First,
 the Lisp-1/Lisp-2 landscape on BEAM is narrow: LFE (Lisp Flavoured

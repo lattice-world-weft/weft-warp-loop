@@ -92,6 +92,18 @@ jobs:
           [ -f "$exe" ] || exe="build/picoquic_vendor_test.exe"
           "$exe"
 
+      - name: Build libriscv_vendor_test (vendored libriscv, ADR 0006)
+        run: cmake --build build --config Release --target libriscv_vendor_test -j 2
+
+      - name: Run libriscv_vendor_test
+        shell: bash
+        run: |
+          set -euo pipefail
+          exe="build/libriscv_vendor_test"
+          [ -f "$exe" ] || exe="build/Release/libriscv_vendor_test.exe"
+          [ -f "$exe" ] || exe="build/libriscv_vendor_test.exe"
+          "$exe"
+
       - name: Build picoquic_fanout_server (the Flow-driven bridge, fanout-core linked in)
         run: cmake --build build --config Release --target picoquic_fanout_server -j 2
 

@@ -36,3 +36,14 @@ Dependency versions, per upstream `cmake/CompileBoost.cmake` and
 11.1.4, OpenSSL, Python3 + Jinja2 (`ProtocolVersion.h` codegen via
 `flow/protocolversion/protocol_version.py`). `vcpkg.json` pulls current
 vcpkg versions of these, which may not exactly match upstream's pins.
+
+**Modified**: `flow/SimpleCounter.cpp` -
+`flow/patches/0001-simplecounter-skip-invalid-name.patch`. Upstream's
+`simpleCounterReport()` asserts every counter name is a valid Prometheus
+metric name and crashes the process otherwise; one dynamic counter this
+tree exercises (`/flow/fastalloc/allocateCallsSize%d` and its siblings in
+`FastAlloc.cpp`, built via `format()`) intermittently loses its entire
+dynamic suffix under real use, tripping that assertion independent of
+concurrency or process exit path (a reentrancy bug in `format()` itself,
+too broad and load-bearing to chase down safely here). The patch skips a
+malformed counter for that one report instead of crashing.

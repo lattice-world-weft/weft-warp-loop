@@ -1,4 +1,6 @@
 import Fanoutcore.SlotMap
+import Fanoutcore.Zone
+import Fanoutcore.ZoneDispatch
 
 namespace Fanoutcore
 
@@ -26,11 +28,21 @@ def Room.unsub (r : Room) (connId : UInt64) : Room :=
 def Room.targets (r : Room) (publisherConnId : UInt64) : Array UInt64 :=
   r.subscribers.filter (· != publisherConnId)
 
+/-- Hilbert quantization depth for the zone-authority coordinate space
+    (ADR 0008 / Zone.lean): 21 bits per axis interleaves to a 63-bit
+    curve index, fitting `UInt64` with a bit to spare. Fixed here rather
+    than exposed as an FFI parameter - a per-world quantization depth is
+    a real future knob (finer resolution costs more curve range to
+    partition), not something callers need to choose yet. -/
+def zoneBits : Nat := 21
+
 structure State where
-  rooms : SlotMap Room
+  rooms     : SlotMap Room
+  zoneWorld : ZoneWorld
   deriving Repr, Inhabited
 
-def State.initial (capacity : Nat) : State := { rooms := SlotMap.empty capacity }
+def State.initial (capacity : Nat) : State :=
+  { rooms := SlotMap.empty capacity, zoneWorld := ZoneWorld.empty capacity zoneBits }
 
 /-- Packs a slot-map `Id` into one `UInt64` (index in the high 32 bits,
     generation in the low 32) so it can cross the FFI boundary as a

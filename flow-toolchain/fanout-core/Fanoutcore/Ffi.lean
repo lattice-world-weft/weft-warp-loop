@@ -53,4 +53,44 @@ def pubTargets (roomId : UInt64) (publisherConnId : UInt64) : IO (Array UInt64) 
   | none => return #[]
   | some room => return room.targets publisherConnId
 
+-- ── Zone-authority / interest dispatch (ADR 0008, Zone.lean/ZoneDispatch.lean) ──
+-- Additive to the Room/SUB/PUB API above, not yet called from it - the
+-- C++ host's wire protocol still only speaks flat Room broadcast. These
+-- exports let a future wire verb (e.g. a position-carrying "MOVE") drive
+-- zone-based authority/interest fanout once that dispatch rewiring lands.
+
+@[export fanout_zone_alloc]
+def zoneAlloc (startIdx : UInt64) (stopIdx : UInt64) : IO UInt64 := do
+  let s ← stateRef.get
+  match s.zoneWorld.allocZone { start := startIdx, stop := stopIdx } with
+  | none => return SENTINEL
+  | some (world', id) =>
+    stateRef.set { s with zoneWorld := world' }
+    return id.pack
+
+@[export fanout_zone_free]
+def zoneFree (zoneId : UInt64) : IO Unit := do
+  let s ← stateRef.get
+  stateRef.set { s with zoneWorld := s.zoneWorld.freeZone (Id.unpack zoneId) }
+
+@[export fanout_entity_move]
+def entityMove (connId : UInt64) (x : Int64) (y : Int64) (z : Int64) : IO Unit := do
+  let s ← stateRef.get
+  stateRef.set { s with zoneWorld := s.zoneWorld.moveEntity connId { x := x, y := y, z := z } }
+
+@[export fanout_entity_remove]
+def entityRemove (connId : UInt64) : IO Unit := do
+  let s ← stateRef.get
+  stateRef.set { s with zoneWorld := s.zoneWorld.removeEntity connId }
+
+/-- Returns the zone-authority/interest fanout target list (ZoneDispatch's
+    `targetsFor`: the authority zone plus curve-adjacent interest zones)
+    for a publish from `publisherConnId` at `(x, y, z)`. Empty array if no
+    zone's range covers that position - a legitimate state (gossip hasn't
+    assigned that range yet), not an error. -/
+@[export fanout_zone_targets]
+def zoneTargets (publisherConnId : UInt64) (x : Int64) (y : Int64) (z : Int64) : IO (Array UInt64) := do
+  let s ← stateRef.get
+  return s.zoneWorld.targetsFor publisherConnId { x := x, y := y, z := z }
+
 end Fanoutcore

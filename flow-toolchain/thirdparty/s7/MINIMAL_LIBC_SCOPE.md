@@ -34,12 +34,22 @@ What's left, unconditionally required (`s7.c:300-335`):
   `abs`.
 - `sys/types.h` — typedefs only (`size_t` etc., mostly already covered
   by `stddef.h`).
-- `time.h` — s7 has a `(current-time)`-style feature; needs a
-  `time()`/`clock()` shim. Worth checking whether this is itself gated
-  behind a feature macro before committing to implementing real wall-clock
-  syscalls in the guest (a sandboxed guest reading real time is itself a
-  determinism question ADR 0006 hasn't settled — likely wants a
-  host-supplied deterministic tick instead of a raw clock syscall).
+- `time.h` — resolved. Exactly two real call sites in all of `s7.c`:
+  `clock()` once (backs the `cpu-time` introspection accessor,
+  `s7.c:73172`), and `time(NULL)` once in the non-GMP branch (seeds the
+  default RNG state, `s7.c:75024`; the GMP-branch sibling call is dead
+  code here since `WITH_GMP` defaults to 0). Neither needs a real
+  wall-clock syscall: `clock()` can return a monotonic counter derived
+  from the guest's own instruction count (which libriscv already tracks
+  and which is deterministic per ADR 0006's whole premise — arguably more
+  correct than a real wall-clock value would be, since Flow's replay
+  contract explicitly excludes real time as an input), and the RNG seed
+  should come from a host-supplied deterministic seed (passed in at
+  guest-call time, the same way any other simulation input would be) 
+  rather than `time(NULL)`, which would make script RNG non-reproducible
+  across peers — the opposite of what this ADR needs. So: no real
+  `time.h` implementation needed, just two small shims wired to
+  host-controlled values instead of OS time.
 - `setjmp.h` — s7's error/continuation handling uses this directly (not
   gated); needs `setjmp`/`longjmp`, which are usually compiler
   intrinsics/builtins rather than real libc calls, so likely free.

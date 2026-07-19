@@ -40,18 +40,24 @@ void fanoutCoreInitialize(uint32_t roomCapacity) {
 	}
 	lean_dec_ref(res);
 
-	// One starting zone spanning the whole Hilbert range: E-GOSSIP
-	// (ZoneDispatch.lean's `maybeSplitZone`, wired into `fanout_entity_move`)
-	// splits it as population accumulates, bounding each zone's live
-	// population near `zoneSplitThreshold` (FanoutCore.lean) rather than
+	// One starting zone spanning the *entire real Hilbert curve range* at
+	// this project's quantization depth (Fanoutcore.lean's `zoneBits = 21`
+	// interleaves to 3*21 = 63 curve-index bits, i.e. [0, 2^63)) - not the
+	// full uint64 range: `2^63` is itself a genuine octree cell (depth 0,
+	// the root, per Partition.lean's `zoneRangeDepth`/`octreeChildren`),
+	// while 2^64-1 is not a power of 8 at all, which silently made
+	// `maybeSplitZone`/`maybeMergeSiblings` treat this bootstrap zone as
+	// un-splittable (a real bug: `octreeChildren` returns `none` for any
+	// non-octree-aligned range, so this default zone would never split in
+	// production regardless of population). AV1-style split/merge
+	// (ZoneDispatch.lean's `maybeSplitZone`/`maybeMergeSiblings`, wired
+	// into `fanout_entity_move`/`fanout_entity_remove`) partitions this
+	// starting zone as population accumulates, bounding each zone's live
+	// population by cost (Partition.lean's `splitIsCheaper`) rather than
 	// leaving every entity in one ever-growing zone regardless of count -
 	// this single starting zone is the only *fixed* one; how many exist
-	// after that is dynamic. `stop` one short of the full uint64 range -
-	// ZoneRange::contains is half-open ([start, stop)), and 0xFFFF...FFFF
-	// is a plain value here, not FANOUT_CORE_SENTINEL (that sentinel is
-	// only meaningful as a *return* value from alloc calls, not as data
-	// crossing this FFI).
-	res = fanout_zone_alloc(0, 0xFFFFFFFFFFFFFFFFULL);
+	// after that is dynamic.
+	res = fanout_zone_alloc(0, 1ULL << 63);
 	if (!lean_io_result_is_ok(res)) {
 		lean_io_result_show_error(res);
 		fprintf(stderr, "fanout-core: fanout_zone_alloc (default zone) failed\n");

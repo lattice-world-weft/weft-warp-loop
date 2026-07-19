@@ -36,19 +36,6 @@ def Room.targets (r : Room) (publisherConnId : UInt64) : Array UInt64 :=
     partition), not something callers need to choose yet. -/
 def zoneBits : Nat := 21
 
-/-- E-GOSSIP split threshold (ZoneDispatch.lean's `maybeSplitZone`):
-    once a zone's live population exceeds this, it splits in two. 32
-    matches this codebase's own established shard-size target (Room's
-    doc comment above: "the handful of subscribers a single room ever
-    holds (bounded by the 32-player shard target)") - reusing an
-    already-chosen scale rather than picking a new, unjustified number.
-    Keeping each zone's population bounded near this is what keeps
-    `targetsForIndex`'s per-publish cost (quadratic in a zone's own
-    population) close to constant regardless of how many entities the
-    world holds in total - see ZoneDispatch.lean's `maybeSplitZone` doc
-    comment for the full reasoning. -/
-def zoneSplitThreshold : Nat := 32
-
 structure State where
   rooms     : SlotMap Room
   zoneWorld : ZoneWorld

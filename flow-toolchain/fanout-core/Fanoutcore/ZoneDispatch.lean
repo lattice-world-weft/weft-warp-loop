@@ -1,5 +1,6 @@
 import Fanoutcore.SlotMap
 import Fanoutcore.Zone
+import Fanoutcore.Partition
 
 namespace Fanoutcore
 
@@ -126,58 +127,125 @@ def ZoneWorld.removeEntity (w : ZoneWorld) (connId : UInt64) : ZoneWorld := Id.r
       zones := zones.update id (zone.unsub connId)
   return { w with zones := zones }
 
-/-- E-GOSSIP (density-tracking zone partitioning, ADR 0008): if `zoneId`'s
-    live population exceeds `threshold`, splits its range at the
-    midpoint into two new zones and redistributes its entities into
-    whichever half their own stored curve index falls in, then frees the
-    original zone. A range of length 1 (`stop = start + 1`) cannot be
-    split further (the midpoint would equal `start`, producing a
-    zero-width half) and is left alone even over threshold - an
-    unavoidable floor on how fine partitioning can get, not a bug.
+/-- The population that would land in each of `zone.range`'s 8 octree
+    children if split now, in the same order `octreeChildren` returns them -
+    just a count per child, no entity data moved yet (this is the input
+    `splitIsCheaper` needs before committing to an actual split). -/
+def childPopulationsFor (zone : Zone) (children : Array ZoneRange) : Array Nat :=
+  children.map fun c => (zone.entities.filter fun (_, idx) => c.contains idx).size
 
-    This bounds each zone's population (and so `targetsForIndex`'s
-    per-publish cost, which is quadratic in a zone's own population) by
-    `threshold` regardless of how many entities the world holds in total
-    - the mechanism the whole Hilbert-zone design exists for: without it,
-    every entity lands in one ever-growing zone (this project's current
-    startup bootstrap - `fanoutCoreInitialize`'s single default zone
-    spanning the entire range) and per-publish cost grows with total
-    population `N`, not a per-zone constant `K` - see fanout_load_client's
-    own measured O(N^3) regression (fixed in `targetsForIndex` above)
-    for what happens when a per-zone cost silently becomes a per-system
-    one. No merge counterpart yet (zones that empty out via `removeEntity`
-    stay allocated, just idle) - that is later, separate work: merge
-    needs a hysteresis threshold of its own (mirroring `moveEntityToIndex`
-    doc comment above) to avoid a population oscillating around the split
-    threshold causing every publish to alternately split and merge the
-    same zone. -/
-def ZoneWorld.maybeSplitZone (w : ZoneWorld) (zoneId : Id) (threshold : Nat) : ZoneWorld :=
+/-- AV1-style split (ADR 0008/0009, Partition.lean): if splitting `zoneId`
+    into its 8 real octree children (`octreeChildren`, along genuine octant
+    boundaries derived from the Hilbert quantization depth - not an
+    arbitrary midpoint bisection, this project's earlier approximation) is
+    cost-favourable (`splitIsCheaper`, this project's own `Θ(population^2)`
+    fanout cost, not the real prior art's ray-tracing surface-area
+    heuristic - see Partition.lean's header comment), frees the original
+    zone and allocates the 8 children, redistributing entities by which
+    child's range contains their own stored curve index. A no-op if
+    `zoneId`'s range isn't a valid octree cell (`octreeChildren` returns
+    `none`) or splitting isn't cost-favourable - split and merge
+    (`maybeMergeSiblings` below) are the same comparison, evaluated from
+    either direction, not two separate mechanisms with independent
+    thresholds to keep in sync. -/
+def ZoneWorld.maybeSplitZone (w : ZoneWorld) (zoneId : Id) : ZoneWorld :=
   match w.zones.find zoneId with
   | none => w
   | some zone =>
-    if zone.entities.size <= threshold then w
-    else
-      let start := zone.range.start
-      let stop := zone.range.stop
-      let mid := start + (stop - start) / 2
-      if mid <= start then w
+    match octreeChildren w.bits zone.range with
+    | none => w
+    | some children =>
+      let childPops := childPopulationsFor zone children
+      if !splitIsCheaper zone.entities.size childPops then w
       else
-        let lower : ZoneRange := { start := start, stop := mid }
-        let upper : ZoneRange := { start := mid, stop := stop }
         let w := w.freeZone zoneId
-        match w.allocZone lower with
-        | none => w
-        | some (w, lowerId) =>
-          match w.allocZone upper with
-          | none => w
-          | some (w, upperId) =>
-            Id.run do
-              let mut zones := w.zones
-              for (connId, idx) in zone.entities do
-                let targetId := if idx < mid then lowerId else upperId
-                match zones.find targetId with
+        Id.run do
+          let mut w := w
+          let mut childIds : Array Id := #[]
+          for c in children do
+            match w.allocZone c with
+            | none => return w
+            | some (w', cid) => w := w'; childIds := childIds.push cid
+          let mut zones := w.zones
+          for (connId, idx) in zone.entities do
+            for i in List.range children.size do
+              if (children[i]!).contains idx then
+                match childIds[i]? with
                 | none => pure ()
-                | some target => zones := zones.update targetId (target.sub connId idx)
-              return { w with zones := zones }
+                | some cid =>
+                  match zones.find cid with
+                  | none => pure ()
+                  | some target => zones := zones.update cid (target.sub connId idx)
+          return { w with zones := zones }
+
+/-- The range one octree level up from `r` (the parent cell `r` would be one
+    of 8 children of), if `r` is itself a valid, non-root octree cell -
+    `none` if `r` is already the root (`zoneRangeDepth` gives depth 0) or
+    isn't octree-aligned to begin with. -/
+def parentRange (bits : Nat) (r : ZoneRange) : Option ZoneRange := do
+  let d ← zoneRangeDepth bits r
+  if d == 0 then none
+  else
+    let len := r.stop - r.start
+    let parentLen := len * 8
+    let parentStart := r.start - (r.start % parentLen)
+    some { start := parentStart, stop := parentStart + parentLen }
+
+/-- The symmetric counterpart to `maybeSplitZone`: if `zoneId` is one of 8
+    live sibling zones that together exactly tile a common parent octree
+    cell, and merging them back into that one parent is cost-favourable
+    (population no longer justifies 8 separate zones' overhead), frees all
+    8 children and allocates the single parent zone with their combined
+    entities. A no-op if `zoneId`'s range has no valid parent, or fewer
+    than all 8 siblings are currently live (a zone can only rejoin its
+    parent when every one of its 7 siblings is also a plain, unsplit leaf -
+    partial merges would leave the parent's range partially double-owned),
+    or merging isn't cost-favourable. -/
+def ZoneWorld.maybeMergeSiblings (w : ZoneWorld) (zoneId : Id) : ZoneWorld :=
+  match w.zones.find zoneId with
+  | none => w
+  | some zone =>
+    match parentRange w.bits zone.range with
+    | none => w
+    | some parent =>
+      match octreeChildren w.bits parent with
+      | none => w
+      | some children =>
+        Id.run do
+          let mut siblingIds : Array Id := #[]
+          let mut allEntities : Array (UInt64 × UInt64) := #[]
+          let mut totalPop := 0
+          for c in children do
+            match w.authorityForIndex c.start with
+            | none => return w
+            | some sid =>
+              match w.zones.find sid with
+              | none => return w
+              | some szone =>
+                if szone.range.start != c.start || szone.range.stop != c.stop then
+                  return w -- that child range isn't a plain leaf zone yet
+                else
+                  siblingIds := siblingIds.push sid
+                  allEntities := allEntities ++ szone.entities
+                  totalPop := totalPop + szone.entities.size
+          let childPops := children.map fun c =>
+            (allEntities.filter fun (_, idx) => c.contains idx).size
+          if !splitIsCheaper totalPop childPops then return w
+          else
+            let mut w := w
+            for sid in siblingIds do
+              w := w.freeZone sid
+            match w.allocZone parent with
+            | none => return w
+            | some (w', pid) =>
+              let mut zones := w'.zones
+              match zones.find pid with
+              | none => return { w' with zones := zones }
+              | some pzone =>
+                let mut pzone := pzone
+                for (connId, idx) in allEntities do
+                  pzone := pzone.sub connId idx
+                zones := zones.update pid pzone
+                return { w' with zones := zones }
 
 end Fanoutcore

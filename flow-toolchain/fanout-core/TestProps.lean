@@ -9,6 +9,7 @@
 -- are asserted inline, and Room's fanout algebra is checked directly.
 import Fanoutcore.FanoutCore
 import Fanoutcore.Zone
+import Fanoutcore.Partition
 import Fanoutcore.ZoneDispatch
 import Plausible
 
@@ -264,39 +265,46 @@ def removeEntityCheck (lens : List Nat) (connId idx : Nat) : Bool :=
   let w2 := w1.removeEntity connId.toUInt64
   w2.liveZones.all fun (_, z) => !z.entities.any (·.1 == connId.toUInt64)
 
-/-- Builds a `ZoneWorld` with a single zone spanning `[0, span)`, places
-    each of `conns` at index `idx % span` (all landing in that one zone
-    - `span < 2` returns `none` since such a range can never split, its
-    midpoint would equal `start`). Used by the E-GOSSIP split properties
-    below, mirroring `zoneWorldFromLengths`'s role for the plain
-    authority/migration properties above it. -/
-def splitSetup (bits span : Nat) (conns idxs : List Nat) : Option (ZoneWorld × Id) :=
-  if span < 2 then none
-  else
-    let w := ZoneWorld.empty (conns.length + 4) bits
-    match w.allocZone { start := 0, stop := span.toUInt64 } with
-    | none => none
-    | some (w, zoneId) =>
-      let placements := List.zip conns idxs
-      let w' :=
-        placements.foldl (fun (acc : ZoneWorld) (c, i) =>
-          acc.moveEntityToIndex c.toUInt64 (i.toUInt64 % span.toUInt64)) w
-      some (w', zoneId)
+/-- `8^d` as a `UInt64`, computed as `1 <<< (3*d)` (`UInt64` has no `HPow
+    UInt64 UInt64` instance) - `8^d = 2^(3d)`, matching `octreeMaxDepth`'s
+    own "3 bits per octree level" accounting. -/
+def pow8 (d : Nat) : UInt64 := (1 : UInt64) <<< (3 * d).toUInt64
 
-/-- True iff `maybeSplitZone` (threshold 0, so it always splits whenever
-    the zone holds any entities and `span >= 2`) preserves the total live
-    entity count across the resulting zones - no entity lost or
-    duplicated between the two halves. Vacuously true when the setup
-    can't produce a split. -/
-def splitPreservesEntityCountCheck (span : Nat) (conns idxs : List Nat) : Bool :=
-  match splitSetup 8 span conns idxs with
+/-- Builds a `ZoneWorld` whose one zone spans the *entire* Hilbert range at
+    quantization depth `depth` (`[0, 8^depth)`, always a valid octree cell at
+    depth 0 - the root - regardless of `depth`'s value, so `octreeChildren`
+    always succeeds on it as long as `depth >= 1`), places each of `conns` at
+    index `idx % 8^depth`. `depth` is bounded to `1..3` (keeps `8^depth` -
+    at most 512 - small enough for exhaustive entity placement in a
+    property test while still giving `maybeSplitZone`/`maybeMergeSiblings`
+    real octree structure to work with, unlike a degenerate 1-cell world). -/
+def splitSetup (depth : Nat) (conns idxs : List Nat) : Option (ZoneWorld × Id) :=
+  let d := depth % 3 + 1
+  let span : UInt64 := pow8 d
+  let w := ZoneWorld.empty (conns.length + 16) d
+  match w.allocZone { start := 0, stop := span } with
+  | none => none
+  | some (w, zoneId) =>
+    let placements := List.zip conns idxs
+    let w' :=
+      placements.foldl (fun (acc : ZoneWorld) (c, i) =>
+        acc.moveEntityToIndex c.toUInt64 (i.toUInt64 % span)) w
+    some (w', zoneId)
+
+/-- True iff `maybeSplitZone` preserves the total live entity count across
+    the resulting zones - no entity lost or duplicated among the 8
+    children. Vacuously true when the setup can't produce a zone, or when
+    splitting isn't cost-favourable for this particular entity
+    distribution (a no-op, which trivially preserves the count too). -/
+def splitPreservesEntityCountCheck (depth : Nat) (conns idxs : List Nat) : Bool :=
+  match splitSetup depth conns idxs with
   | none => true
   | some (w, zoneId) =>
     match w.zones.find zoneId with
     | none => true
     | some zone =>
       let before := zone.entities.size
-      let w' := w.maybeSplitZone zoneId 0
+      let w' := w.maybeSplitZone zoneId
       let after := (w'.liveZones.map fun (_, z) => z.entities.size).foldl (· + ·) 0
       before == after
 
@@ -304,36 +312,96 @@ def splitPreservesEntityCountCheck (span : Nat) (conns idxs : List Nat) : Bool :
     range actually contains that entity's own stored curve index - the
     correctness property the whole split exists for (an entity must stay
     discoverable via `authorityForIndex` at its own position, not
-    silently misfiled into the wrong half by the split). -/
-def splitPlacesEntitiesCorrectlyCheck (span : Nat) (conns idxs : List Nat) : Bool :=
-  match splitSetup 8 span conns idxs with
+    silently misfiled into the wrong octant by the split). -/
+def splitPlacesEntitiesCorrectlyCheck (depth : Nat) (conns idxs : List Nat) : Bool :=
+  match splitSetup depth conns idxs with
   | none => true
   | some (w, zoneId) =>
-    let w' := w.maybeSplitZone zoneId 0
+    let w' := w.maybeSplitZone zoneId
     w'.liveZones.all fun (_, z) =>
       z.entities.all fun (_, idx) => z.range.contains idx
 
 /-- True iff live zone ranges stay pairwise disjoint after a split -
     `maybeSplitZone` must not silently create overlapping authority. -/
-def splitKeepsRangesDisjointCheck (span : Nat) (conns idxs : List Nat) : Bool :=
-  match splitSetup 8 span conns idxs with
+def splitKeepsRangesDisjointCheck (depth : Nat) (conns idxs : List Nat) : Bool :=
+  match splitSetup depth conns idxs with
   | none => true
   | some (w, zoneId) =>
-    let w' := w.maybeSplitZone zoneId 0
+    let w' := w.maybeSplitZone zoneId
     disjointRanges (w'.liveZones.map fun (_, z) => z.range)
 
-/-- True iff a zone at or under `threshold` population is left untouched
-    by `maybeSplitZone` - splitting is conditional on exceeding it, not
-    unconditional. -/
-def splitRespectsThresholdCheck (span : Nat) (conns idxs : List Nat) : Bool :=
-  match splitSetup 8 span conns idxs with
+/-- True iff a zone holding at most one entity is never split -
+    `leafCost 1 = 1` while any real split costs at least `zoneOverhead * 8`
+    (Partition.lean), so splitting a near-empty zone can never be
+    cost-favourable; this is the cost model actually doing something
+    sensible, not splitting unconditionally the way the old threshold-only
+    mechanism could be made to (`maybeSplitZone zoneId 0` in the previous
+    version always split any non-empty zone). -/
+def splitNeedsEnoughPopulationCheck (depth : Nat) (conn : Nat) : Bool :=
+  match splitSetup depth [conn] [0] with
   | none => true
   | some (w, zoneId) =>
-    match w.zones.find zoneId with
+    let w' := w.maybeSplitZone zoneId
+    w'.liveZones.size == w.liveZones.size
+
+/-- Builds a `ZoneWorld` whose root (depth `d := depth % 3 + 1`, span
+    `[0, 8^d)`) has already been split into its 8 real octree children
+    (mirroring `splitSetup`, but one level down - the setup
+    `maybeMergeSiblings` needs, since it only ever considers merging 8
+    already-live sibling leaves back into their shared parent). Split
+    directly via `octreeChildren`/`allocZone` rather than
+    `maybeSplitZone`, since a lone empty root never meets
+    `splitIsCheaper` (see `splitNeedsEnoughPopulationCheck`) - this
+    fixture needs 8 live children unconditionally, independent of the
+    cost model's own opinion on an empty root. Entities are placed
+    *after* the split, directly into the children via
+    `moveEntityToIndex`, so each lands in whichever of the 8 real octants
+    its index falls in - not artificially pre-sorted. -/
+def mergeSetup (depth : Nat) (conns idxs : List Nat) : Option ZoneWorld := do
+  let d := depth % 3 + 1
+  let span : UInt64 := pow8 d
+  let w := ZoneWorld.empty (conns.length + 16) d
+  let children ← octreeChildren d { start := 0, stop := span }
+  let w := Id.run do
+    let mut w := w
+    for c in children do
+      match w.allocZone c with
+      | none => pure ()
+      | some (w', _) => w := w'
+    return w
+  let placements := List.zip conns idxs
+  let w' :=
+    placements.foldl (fun (acc : ZoneWorld) (c, i) =>
+      acc.moveEntityToIndex c.toUInt64 (i.toUInt64 % span)) w
+  some w'
+
+/-- True iff, after `maybeMergeSiblings` on one of the 8 children,
+    the total live entity count is preserved - no entity lost or
+    duplicated when 8 siblings recombine into their parent. Vacuously
+    true when the setup can't produce a zone, or merging isn't
+    cost-favourable (a no-op). -/
+def mergePreservesEntityCountCheck (depth : Nat) (conns idxs : List Nat) : Bool :=
+  match mergeSetup depth conns idxs with
+  | none => true
+  | some w =>
+    match w.liveZones[0]? with
     | none => true
-    | some zone =>
-      let w' := w.maybeSplitZone zoneId zone.entities.size
-      w'.liveZones.size == w.liveZones.size
+    | some (firstId, _) =>
+      let before := (w.liveZones.map fun (_, z) => z.entities.size).foldl (· + ·) 0
+      let w' := w.maybeMergeSiblings firstId
+      let after := (w'.liveZones.map fun (_, z) => z.entities.size).foldl (· + ·) 0
+      before == after
+
+/-- True iff live zone ranges stay pairwise disjoint after a merge. -/
+def mergeKeepsRangesDisjointCheck (depth : Nat) (conns idxs : List Nat) : Bool :=
+  match mergeSetup depth conns idxs with
+  | none => true
+  | some w =>
+    match w.liveZones[0]? with
+    | none => true
+    | some (firstId, _) =>
+      let w' := w.maybeMergeSiblings firstId
+      disjointRanges (w'.liveZones.map fun (_, z) => z.range)
 
 /-- Run one property; print the counterexample and exit non-zero on failure. -/
 def runCheck (name : String) (p : Prop) [Testable p] (cfg : Configuration) : IO Unit := do
@@ -448,27 +516,38 @@ def main : IO Unit := do
       noDuplicateTargetsCheck lens conns idxs = true) cfg
 
   runCheck "maybeSplitZone preserves the total live entity count"
-    (NamedBinder "span" <| ∀ (span : Nat),
+    (NamedBinder "depth" <| ∀ (depth : Nat),
      NamedBinder "conns" <| ∀ (conns : List Nat),
      NamedBinder "idxs" <| ∀ (idxs : List Nat),
-      splitPreservesEntityCountCheck span conns idxs = true) cfg
+      splitPreservesEntityCountCheck depth conns idxs = true) cfg
 
   runCheck "maybeSplitZone places every entity in a zone whose range contains its own curve index"
-    (NamedBinder "span" <| ∀ (span : Nat),
+    (NamedBinder "depth" <| ∀ (depth : Nat),
      NamedBinder "conns" <| ∀ (conns : List Nat),
      NamedBinder "idxs" <| ∀ (idxs : List Nat),
-      splitPlacesEntitiesCorrectlyCheck span conns idxs = true) cfg
+      splitPlacesEntitiesCorrectlyCheck depth conns idxs = true) cfg
 
   runCheck "maybeSplitZone keeps live zone ranges pairwise disjoint"
-    (NamedBinder "span" <| ∀ (span : Nat),
+    (NamedBinder "depth" <| ∀ (depth : Nat),
      NamedBinder "conns" <| ∀ (conns : List Nat),
      NamedBinder "idxs" <| ∀ (idxs : List Nat),
-      splitKeepsRangesDisjointCheck span conns idxs = true) cfg
+      splitKeepsRangesDisjointCheck depth conns idxs = true) cfg
 
-  runCheck "maybeSplitZone leaves a zone at or under threshold untouched"
-    (NamedBinder "span" <| ∀ (span : Nat),
+  runCheck "maybeSplitZone never splits a zone holding at most one entity"
+    (NamedBinder "depth" <| ∀ (depth : Nat),
+     NamedBinder "conn" <| ∀ (conn : Nat),
+      splitNeedsEnoughPopulationCheck depth conn = true) cfg
+
+  runCheck "maybeMergeSiblings preserves the total live entity count"
+    (NamedBinder "depth" <| ∀ (depth : Nat),
      NamedBinder "conns" <| ∀ (conns : List Nat),
      NamedBinder "idxs" <| ∀ (idxs : List Nat),
-      splitRespectsThresholdCheck span conns idxs = true) cfg
+      mergePreservesEntityCountCheck depth conns idxs = true) cfg
+
+  runCheck "maybeMergeSiblings keeps live zone ranges pairwise disjoint"
+    (NamedBinder "depth" <| ∀ (depth : Nat),
+     NamedBinder "conns" <| ∀ (conns : List Nat),
+     NamedBinder "idxs" <| ∀ (idxs : List Nat),
+      mergeKeepsRangesDisjointCheck depth conns idxs = true) cfg
 
   IO.println "ALL PROPERTY TESTS PASSED"

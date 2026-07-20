@@ -2,7 +2,15 @@
 
 ## Status
 
-Proposed (design record only; no code changes accompany this ADR).
+Constants: adopted as sizing reference (still no dedicated code change -
+capacity ceilings, not a load-bearing mechanism yet). Interest/authority
+separation: **implemented** in `fanout-core`'s own Lean4 kernels
+(`Fanoutcore/Zone.lean`, `ZoneDispatch.lean`, `Partition.lean`) - see
+"Implementation update" at the end of this document for what actually
+landed, as a from-scratch reimplementation of this ADR's *rule*, not a
+port of `lean-predictive-bvh`/`lean-interest-mgmt` (ADR 0009 territory:
+see that ADR and this repo's own commit history for why the dependency
+itself wasn't kept).
 
 ## Context and Problem Statement
 
@@ -173,3 +181,55 @@ Recorded as the target architecture, not implemented in this pass:
   bare-metal/bandwidth/CPU assumptions hold for this project's actual
   hardware and protocol overhead, which haven't been independently
   measured here.
+
+## Implementation update
+
+What this ADR called "recorded as the target architecture, not
+implemented in this pass" has since been implemented, in increments,
+inside `fanout-core`'s own Lean4 (not a port of `lean-predictive-bvh` -
+see ADR 0009 for why that dependency wasn't kept):
+
+- **Hilbert-curve zone authority**: `Zone.lean`'s `hilbert3D`/
+  `authorityForIndex`, one authority zone per entity, proven disjoint
+  and unique by property test.
+- **AV1-style cost-driven split/merge**: `Partition.lean`/
+  `ZoneDispatch.lean`'s `maybeSplitZone`/`maybeMergeSiblings` - octree-
+  aligned, population-cost-based (this project's own `Θ(k²)` cost, not
+  the real prior art's ray-tracing SAH), replacing a fixed zone count.
+- **Ghost-range interest**: `withinGhostRange`, k-tick kinematic
+  expansion (`ghostExpansion`) filtering adjacent-zone visibility by
+  real per-axis micrometre distance, not curve-index distance or
+  blanket zone-membership (a real scale bug in curve-index distance was
+  found and fixed before shipping - see commit history).
+- **RTT-derived lookahead**: each entity's ghost/hysteresis window comes
+  from its own connection's real measured RTT (`picoquic_get_rtt`,
+  converted to ticks at the FFI boundary), not one fixed constant for
+  every connection.
+- **Hysteresis-gated authority transfer**: `moveEntityToIndexHysteresisV`
+  requires a boundary crossing to persist for `hysteresisTicksFor`
+  (RTT-derived) ticks before authority actually moves, absorbing
+  boundary jitter.
+- **Capacity-separated authority/interest budgets**: `authorityCapacity`
+  (256, this project's own resource-safety ceiling) and
+  `interestCapacity` (400, `AuthorityInterest.lean`'s own validated-at-
+  scale value) bound worst-case cost independently of cost-driven
+  splitting, which bottoms out at `octreeMaxDepth`.
+- **O(N+k) scaling - empirically validated, not the real prior art's
+  algorithm**: `ScaleScratch.lean` measured `avgTargetsPerPublish`
+  staying flat (2-3) across a 40x population increase (100 to 4000
+  entities), confirming split/merge + ghost-range filtering already
+  deliver near-linear total fanout cost. Decided against porting the
+  real prior art's `HilbertBroadphase` (radix sort + `clz30` grouping +
+  `BucketDir`) - that mechanism solves broadphase collision pairs over
+  an *unstructured* entity set recomputed from scratch each tick; this
+  system's entities aren't unstructured (zone membership updates
+  incrementally as each entity moves), so that mechanism would
+  duplicate work the existing spatial partition already does.
+- **Wire protocol**: `picoquic_fanout_server.actor.cpp`'s `ZPB` verb
+  carries real velocity (`ZPB x y z vx vy vz`) end to end, verified
+  against a live server up to 128 concurrent connections.
+
+Not yet done: wire-level zone provisioning (zones are still allocated
+via direct FFI calls a test harness makes, not a wire verb), and
+`fanout_load_client`'s own ZPB sends still report zero velocity (a real
+client would report its actual per-axis speed).

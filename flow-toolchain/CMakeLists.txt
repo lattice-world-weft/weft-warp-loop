@@ -391,6 +391,16 @@ target_compile_definitions(ir_compiled_content_test PRIVATE
   IR_COMPILED_CONTENT_TEST_GUEST_ELF="${CMAKE_CURRENT_SOURCE_DIR}/fanout-core/IrCodegenScratch_out.elf")
 target_link_libraries(ir_compiled_content_test PRIVATE riscv)
 
+# --- s7_riscv_eval_int_test: checkpoint 1 of the "real content through the
+# interpreted s7 path" plan (ADR 0028) - verifies guest_eval_int returns a
+# real usable integer via the register, not just stdout text a human has to
+# read. Standalone (no Flow actor), same reasoning as ir_compiled_content_test.
+add_executable(s7_riscv_eval_int_test
+  examples/s7_riscv_eval_int_test.cpp
+  examples/s7_riscv_core.cpp)
+target_include_directories(s7_riscv_eval_int_test PRIVATE examples)
+target_link_libraries(s7_riscv_eval_int_test PRIVATE riscv)
+
 # --- s7_riscv_actor_test: a real Flow actor (s7_riscv_actor.actor.cpp)
 # calling into the libriscv-sandboxed s7 guest (riscv-guests/s7_guest.elf,
 # built from riscv-guests/s7_guest_main.c - see riscv-guests/README.md for

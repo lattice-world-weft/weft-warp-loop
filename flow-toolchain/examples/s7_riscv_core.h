@@ -66,3 +66,19 @@ inline void s7RiscvEval(const std::string& expression) {
 	g_s7RiscvMachine->template vmcall<MaxInstructions>("guest_eval", expression);
 	g_s7RiscvTotalInstructions += g_s7RiscvMachine->instruction_counter();
 }
+
+// Fuel-bounded synchronous call into the guest, returning a usable
+// integer result directly (no stdout scraping - see guest_eval_int in
+// riscv-guests/s7_guest_main.c). For content whose result the host
+// needs programmatically (a loot roll's item id, a damage value), not
+// just for a human to read off the console.
+template <uint64_t MaxInstructions = 2'000'000ull>
+inline int64_t s7RiscvEvalInt(const std::string& expression) {
+	if (!g_s7RiscvMachine) {
+		fprintf(stderr, "s7RiscvEvalInt: s7RiscvInitialize() was not called\n");
+		abort();
+	}
+	int64_t result = (int64_t)g_s7RiscvMachine->template vmcall<MaxInstructions>("guest_eval_int", expression);
+	g_s7RiscvTotalInstructions += g_s7RiscvMachine->instruction_counter();
+	return result;
+}

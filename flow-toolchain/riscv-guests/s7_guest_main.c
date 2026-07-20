@@ -31,6 +31,18 @@ int guest_eval(const char *expr) {
 	return len;
 }
 
+/* VMCALL entry point for content that returns a plain integer (loot
+ * rolls, damage/score values, ...): evaluates one expression and
+ * returns its value directly via the normal integer return-value
+ * register - no stdout, no printf, no write() syscall on this path at
+ * all, unlike guest_eval above. The host gets a usable value back
+ * programmatically instead of having to scrape stdout text. */
+__attribute__((used, retain))
+long long guest_eval_int(const char *expr) {
+	s7_pointer result = s7_eval_c_string(g_sc, expr);
+	return (long long)s7_integer(result);
+}
+
 int main(void) {
 	guest_init();
 	/* Never return from main normally (libriscv's VMCALL.md: that runs

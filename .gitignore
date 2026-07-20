@@ -14,3 +14,20 @@ fanout_load_client_multi.*.xml
 # precedent of being a checked-in artifact, not a build output.
 /flow-toolchain/fanout-core/IrCodegenScratch_out.s
 /flow-toolchain/fanout-core/IrCodegenScratch_out.o
+
+# riscv-guests/README.md's own build recipe's intermediates (regenerated
+# every rebuild) - only the final linked s7_guest.elf is committed.
+/flow-toolchain/riscv-guests/mus-config.h
+/flow-toolchain/riscv-guests/s7.o
+/flow-toolchain/riscv-guests/s7_guest_main.o
+
+# General build/toolchain intermediates that can appear anywhere a
+# scratch script or manual toolchain invocation runs, not just the
+# specific paths above.
+*.o
+*.obj
+*.olean
+*.ilean
+.lake/
+*.log
+*.tmp

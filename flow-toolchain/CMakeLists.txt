@@ -405,7 +405,8 @@ target_link_libraries(s7_riscv_eval_int_test PRIVATE riscv)
 # interpreted s7" plan (ADR 0028) - loads riscv-guests/content/loot.scm
 # (hand-ported from v-sekai-multiplayer-fabric/loot) into two independent
 # Machine instances and checks both agree with each other AND with the
-# Lean4 reference value (fanout-core/LootGoldenVectorScratch.lean).
+# Lean4 reference value (computed once against upstream, not kept as a
+# live file in this repo - ADR 0032).
 add_executable(s7_riscv_loot_golden_test
   examples/s7_riscv_loot_golden_test.cpp
   examples/s7_riscv_core.cpp)

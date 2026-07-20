@@ -4,9 +4,12 @@
 // Golden-vector proof for riscv-guests/content/combat.scm (hand-ported
 // from v-sekai-multiplayer-fabric/combat), matching
 // s7_riscv_loot_golden_test.cpp's own methodology: correctness against
-// a freshly-computed Lean4 reference (CombatGoldenVectorScratch.lean)
-// and determinism across two independent libriscv Machine instances,
-// checked at once.
+// a freshly-computed Lean4 reference and determinism across two
+// independent libriscv Machine instances, checked at once. The
+// reference was computed once via a throwaway `lake env lean --run`
+// script against upstream commit
+// f9a1964892c6943e120c82bad398646944aaa10e - not kept as a live file in
+// this repo (ADR 0032: one source of truth, upstream).
 //
 // Golden vector: spawn, then 30 ticks, then one opener attack. Lean4
 // reference: final enemyHp = 90, final tick = 30.
@@ -32,7 +35,7 @@ int main() {
 		_exit(1);
 	}
 
-	// 30 'tick events, matching goldenEvents in CombatGoldenVectorScratch.lean
+	// 30 'tick events, matching the golden vector's event sequence
 	std::string ticks;
 	for (int i = 0; i < 30; ++i) ticks += "'tick ";
 

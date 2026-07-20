@@ -2,8 +2,15 @@
 ; Copyright (c) 2026 K. S. Ernest (iFire) Lee
 ;
 ; Hand-ported from v-sekai-multiplayer-fabric/progression's
-; core/ProgressionCore/Core.lean (fetched via gh api, translated
-; line-for-line) - the inventory/affinity-gate/credit reducer.
+; core/ProgressionCore/Core.lean (translated line-for-line) - the
+; inventory/affinity-gate/credit reducer.
+;
+; Source of truth: v-sekai-multiplayer-fabric/progression is upstream
+; and authoritative. This file is a pinned, one-time translation, not
+; an ongoing mirror - ADR 0032. Ported from commit
+; 659d52239ba50ab313614bf3aa6233165eb89788. If that repo's Core.lean
+; changes, this file is stale until re-ported by hand against the new
+; commit - nothing here re-checks upstream automatically.
 ;
 ; Profile is a 4-slot vector: #(credits affinity items arts).
 ; items/arts are plain Scheme lists of (item . count) pairs / art ids -

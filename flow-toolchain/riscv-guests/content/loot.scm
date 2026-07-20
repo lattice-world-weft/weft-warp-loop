@@ -6,8 +6,15 @@
 ; v-sekai-multiplayer-fabric/loot's core/LootCore/{Rng,Loot}.lean
 ; (totalWeight, pick, roll, and the exact xorshift32 RNG both the Lean
 ; spec and its SPIR-V kernel already agree on bit-for-bit) - not a
-; reinterpretation, a direct line-for-line translation, checked against
-; the Lean source fetched via `gh api` on 2026-07-20.
+; reinterpretation, a direct line-for-line translation.
+;
+; Source of truth: v-sekai-multiplayer-fabric/loot is upstream and
+; authoritative. This file is a pinned, one-time translation, not an
+; ongoing mirror - ADR 0032. Ported from commit
+; 6c4439441c7ea9ef24b80fc68b6486e97219285b (2026-06-12). If that repo's
+; Rng.lean/Loot.lean change, this file is stale until re-ported by hand
+; against the new commit - nothing here re-checks upstream
+; automatically.
 ;
 ; RNG: Lean's UInt32 arithmetic wraps automatically (mod 2^32); s7's
 ; integers are arbitrary-precision, so every operation that could

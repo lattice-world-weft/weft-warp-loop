@@ -2,8 +2,15 @@
 ; Copyright (c) 2026 K. S. Ernest (iFire) Lee
 ;
 ; Hand-ported from v-sekai-multiplayer-fabric/combat's
-; core/CombatCore/Core.lean (fetched via gh api, translated
-; line-for-line) - the combo/invulnerability/damage reducer.
+; core/CombatCore/Core.lean (translated line-for-line) - the
+; combo/invulnerability/damage reducer.
+;
+; Source of truth: v-sekai-multiplayer-fabric/combat is upstream and
+; authoritative. This file is a pinned, one-time translation, not an
+; ongoing mirror - ADR 0032. Ported from commit
+; f9a1964892c6943e120c82bad398646944aaa10e. If that repo's Core.lean
+; changes, this file is stale until re-ported by hand against the new
+; commit - nothing here re-checks upstream automatically.
 ;
 ; State is a Lean structure (6 UInt32/Bool fields); ported as a 6-slot
 ; vector with named accessors rather than an assoc-list, so field

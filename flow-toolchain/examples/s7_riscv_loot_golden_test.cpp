@@ -8,7 +8,9 @@
 // libriscv Machine instances and calls loot-roll on both, checking:
 // (1) both agree with each other (ADR 0006's determinism proof shape),
 // and (2) both agree with the Lean4 reference value, computed
-// separately via fanout-core/LootGoldenVectorScratch.lean
+// separately, once, via a throwaway `lake env lean --run` script against
+// upstream commit 6c4439441c7ea9ef24b80fc68b6486e97219285b - not kept as
+// a live file in this repo (ADR 0032: one source of truth, upstream)
 // (`lake env lean --run`), not by hand-calculation.
 //
 // Golden vector: seed=42, table=[(1,10),(2,20),(3,5)] -> roll = 3

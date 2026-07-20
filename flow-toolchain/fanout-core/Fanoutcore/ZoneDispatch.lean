@@ -142,20 +142,41 @@ def ZoneWorld.targetsFor (w : ZoneWorld) (publisherConnId : UInt64) (pos : Pos3)
     (`AuthorityInterest.lean`'s `hysteresisThreshold`), so an entity
     oscillating exactly on a zone boundary can migrate every call; that
     refinement is later, separate work, not silently assumed solved
-    here. -/
+    here.
+
+    Checks the target zone's `authorityCapacity` headroom *before*
+    unsubbing from any previous zone, not after: unsubbing first and only
+    then discovering the target zone is full (`Zone.sub` silently no-ops
+    once at capacity) would remove the entity from its previous zone
+    while adding it to nothing, vanishing it from the world entirely -
+    exactly the degenerate single-cell pileup `authorityCapacity` exists
+    to protect against, not a case it's fine to fail open on. If the
+    target has no room and doesn't already hold this entity, the whole
+    move is refused and the entity is left exactly where it was. -/
 def ZoneWorld.moveEntityToIndexV (w : ZoneWorld) (connId idx vx vy vz : UInt64) (rttTicks : UInt64 := 0) (pos : Pos3 := { x := 0, y := 0, z := 0 }) : ZoneWorld := Id.run do
-  let mut zones := w.zones
-  for (id, zone) in w.liveZones do
-    if zone.entities.any (·.connId == connId) then
-      zones := zones.update id (zone.unsub connId)
-  let w := { w with zones := zones }
   match w.authorityForIndex idx with
-  | none => return w
+  | none =>
+    -- No zone owns this index (an unassigned gap) - drop the entity from
+    -- wherever it was; there is no target zone whose capacity to check.
+    let mut zones := w.zones
+    for (id, zone) in w.liveZones do
+      if zone.entities.any (·.connId == connId) then
+        zones := zones.update id (zone.unsub connId)
+    return { w with zones := zones }
   | some zoneId =>
     match w.zones.find zoneId with
     | none => return w
     | some zone =>
-      return { w with zones := w.zones.update zoneId (zone.sub { connId, idx, pos, vx, vy, vz, rttTicks }) }
+      if !zone.entities.any (·.connId == connId) && zone.entities.size >= authorityCapacity then
+        return w
+      else
+        let mut zones := w.zones
+        for (id, z) in w.liveZones do
+          if id != zoneId && z.entities.any (·.connId == connId) then
+            zones := zones.update id (z.unsub connId)
+        match zones.find zoneId with
+        | none => return w
+        | some zone' => return { w with zones := zones.update zoneId (zone'.sub { connId, idx, pos, vx, vy, vz, rttTicks }) }
 
 /-- `moveEntityToIndexV` with zero velocity - the convenience entry point
     for callers that don't track velocity (most of TestProps.lean's plain
@@ -242,11 +263,23 @@ def ZoneWorld.moveEntityToIndexHysteresisV (w : ZoneWorld) (connId idx vx vy vz 
             match w.zones.find targetZoneId with
             | none => return w
             | some targetZone =>
-              let curZone' := curZone.unsub connId
-              let targetZone' := targetZone.sub
-                { connId, idx, pos, vx, vy, vz, rttTicks, pendingZone := none, migrationStreak := 0 }
-              let zones := (w.zones.update curZoneId curZone').update targetZoneId targetZone'
-              return { w with zones := zones }
+              if targetZone.entities.size >= authorityCapacity then
+                -- Target zone has no room to commit into right now - stay
+                -- put with the streak preserved (not reset), so a later
+                -- call retries the commit once the target frees up,
+                -- rather than unsubbing from curZone first and finding
+                -- Zone.sub silently refuses the target, vanishing the
+                -- entity from the world entirely.
+                let curZone' := curZone.unsub connId
+                let curZone'' := curZone'.sub
+                  { connId, idx, pos, vx, vy, vz, rttTicks, pendingZone := some targetZoneId, migrationStreak := streak }
+                return { w with zones := w.zones.update curZoneId curZone'' }
+              else
+                let curZone' := curZone.unsub connId
+                let targetZone' := targetZone.sub
+                  { connId, idx, pos, vx, vy, vz, rttTicks, pendingZone := none, migrationStreak := 0 }
+                let zones := (w.zones.update curZoneId curZone').update targetZoneId targetZone'
+                return { w with zones := zones }
           else
             let curZone' := curZone.unsub connId
             let curZone'' := curZone'.sub

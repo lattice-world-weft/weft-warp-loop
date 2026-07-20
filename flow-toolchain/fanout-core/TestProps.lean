@@ -331,6 +331,56 @@ def interestCapacityCheck (n : Nat) : Bool :=
       let wf := (List.range n).foldl (fun acc i => acc.moveEntityToIndex (i + 1).toUInt64 1) w3
       (wf.targetsForIndex 0 0).size <= interestCapacity
 
+/-- Regression guard for a real bug found by re-checking this session's
+    own work: `moveEntityToIndexV` used to unsub an entity from its
+    previous zone unconditionally, *before* checking whether the target
+    zone had room - if the target was already at `authorityCapacity`,
+    `Zone.sub` would silently refuse it there too, vanishing the entity
+    from every zone in the world with no authority home at all. True iff
+    an entity sitting in zone A, attempting to migrate into a zone B
+    that's already full, is still findable in *some* live zone afterward
+    (fixed: the move is refused outright, leaving the entity in zone A
+    untouched, rather than removed from A and rejected by B). `seed` is
+    unused - this scenario is fully deterministic - kept only so this
+    runs as a Plausible check like its neighbours. -/
+def capacityFullMigrationPreservesEntityCheck (seed : Nat) : Bool :=
+  let _ := seed
+  let w0 := ZoneWorld.empty (authorityCapacity + 16) 21
+  match w0.allocZone { start := 0, stop := 1 } with
+  | none => true
+  | some (w1, _) =>
+    match w1.allocZone { start := 1, stop := 2 } with
+    | none => true
+    | some (w2, _) =>
+      let w3 := w2.moveEntityToIndex 999 0
+      let wFull := (List.range authorityCapacity).foldl
+        (fun acc i => acc.moveEntityToIndex (i + 1000).toUInt64 1) w3
+      let wAfter := wFull.moveEntityToIndex 999 1
+      wAfter.liveZones.any fun (_, z) => z.entities.any (·.connId == 999)
+
+/-- Same regression, via the hysteresis-gated path: fills zone B to
+    `authorityCapacity`, then drives an entity in zone A toward B for
+    enough consecutive ticks to reach a commit (`hysteresisTicksFor`
+    ticks, well within a generous fixed bound), and checks it's still
+    findable somewhere afterward - the commit branch had the identical
+    unsub-before-capacity-check bug, fixed by staying in the current zone
+    with the streak preserved when the target has no room. -/
+def hysteresisCapacityFullMigrationPreservesEntityCheck (seed : Nat) : Bool :=
+  let _ := seed
+  let w0 := ZoneWorld.empty (authorityCapacity + 16) 21
+  match w0.allocZone { start := 0, stop := 1 } with
+  | none => true
+  | some (w1, _) =>
+    match w1.allocZone { start := 1, stop := 2 } with
+    | none => true
+    | some (w2, _) =>
+      let w3 := w2.moveEntityToIndexHysteresisV 999 0 0 0 0
+      let wFull := (List.range authorityCapacity).foldl
+        (fun acc i => acc.moveEntityToIndexHysteresisV (i + 1000).toUInt64 1 0 0 0) w3
+      let wAfter := (List.range 10).foldl
+        (fun acc _ => acc.moveEntityToIndexHysteresisV 999 1 0 0 0) wFull
+      wAfter.liveZones.any fun (_, z) => z.entities.any (·.connId == 999)
+
 /-- True iff `targetsForIndex` never includes the publisher itself. -/
 def targetsExcludePublisherCheck (lens : List Nat) (connId idx : Nat) : Bool :=
   let w := zoneWorldFromLengths 8 lens
@@ -764,5 +814,13 @@ def main : IO Unit := do
   runCheck "targetsForIndex's interest portion never exceeds interestCapacity"
     (NamedBinder "n" <| ∀ (n : Nat),
       interestCapacityCheck n = true) cfg
+
+  runCheck "moveEntityToIndexV never vanishes an entity when its target zone is full"
+    (NamedBinder "seed" <| ∀ (seed : Nat),
+      capacityFullMigrationPreservesEntityCheck seed = true) cfg
+
+  runCheck "moveEntityToIndexHysteresisV never vanishes an entity when its target zone is full"
+    (NamedBinder "seed" <| ∀ (seed : Nat),
+      hysteresisCapacityFullMigrationPreservesEntityCheck seed = true) cfg
 
   IO.println "ALL PROPERTY TESTS PASSED"

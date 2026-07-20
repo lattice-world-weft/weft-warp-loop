@@ -12,3 +12,5 @@ weft-warp-loop stack. One decision per file, numbered in acceptance order.
 - [0007 — Scope the s7/shrubbery toolchain beyond ADR 0006: actor-compiler, Boost.Asio, taskweft, Elixir NIF](0007-s7-shrubbery-toolchain-scope-and-elixir-nif-comparison.md)
 - [0008 — Adopt mas-bandwidth-scale player/world-server constants and the fabric's interest/authority model](0008-fiedler-scale-constants-and-fabric-interest-authority.md)
 - [0009 — Reserved witness zones for cross-machine zone-authority leases, over full Multi-Raft/parallel-commits](0009-reserved-witness-zones-for-cross-machine-lease-authority.md)
+- [0010 — Godot as an interest-bounded thin presentation client, over patching Godot's core engine in place](0010-godot-thin-client-interest-bounded-over-in-place-patches.md)
+- [0011 — Standardize the sandboxed deterministic-content language on s7 Scheme (Lisp-1), over GDScript, taskweft's own DSL, or a freestanding Lean4 port](0011-standardize-sandboxed-scripting-on-s7-lisp1.md)

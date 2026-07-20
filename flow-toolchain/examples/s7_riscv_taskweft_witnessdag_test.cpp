@@ -4,9 +4,10 @@
 // Verifies qc-fuzz.shrub + taskweft-witnessdag.shrub against three
 // hand-traced escalation paths (deliberately using always-true/
 // always-false predicates so the outcome doesn't depend on which
-// values the xorshift32 stream actually samples - only the escalation
-// control flow is under test here, not qc-fuzz's own random-sampling
-// distribution):
+// values qc-fuzz's real Plausible-derived StdGen stream actually
+// samples - only the escalation control flow is under test here, not
+// qc-fuzz's own sampling distribution, which s7_riscv_qc_fuzz_test.cpp
+// verifies separately against a hand-computed reference):
 //   r1: always-true candidate -> resolves at rung 0 as provablyNone
 //       (every sampled w "is a witness", so qc-certify finds one on
 //       its first sample; certifyWitness's own priority order treats
@@ -17,15 +18,16 @@
 //   r3: always-false candidate, but a readback stub that reports
 //       found=#t immediately -> short-circuits at rung 0 regardless of
 //       the candidate predicate, bool=#t, outcome=(found 42).
-// Plus a determinism check: the same seed fed to qc-search-loop twice
-// must produce the same result (the property this whole tier depends
-// on, same as every other RNG-touching piece of content here).
+// Plus a determinism check: the same seed fed to qc-certify twice must
+// produce the same result (the property this whole tier depends on,
+// same as every other RNG-touching piece of content here).
 #include "s7_riscv_core.h"
 
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 
 static std::string readFile(const char* path) {
@@ -53,8 +55,8 @@ int main() {
 		    (define r2 (certify-witness always-false default-readback (default-ladder) 67890))
 		    (define r3 (certify-witness always-false found-readback (default-ladder) 111))
 		    (define r3-outcome (caddr (caddr r3)))
-		    (define det-a (qc-search-loop always-true-1 256 200 999))
-		    (define det-b (qc-search-loop always-true-1 256 200 999)) )";
+		    (define det-a (qc-certify always-true-1 256 200 999))
+		    (define det-b (qc-certify always-true-1 256 200 999)) )";
 
 	const std::string expr =
 		"(begin " + macros + qc + wd + setup +
@@ -69,7 +71,13 @@ int main() {
 
 	constexpr int64_t kExpected = 11111111;  // 10000000+1000000+100000+10000+1000+100+10+1
 	s7RiscvInitialize();
-	int64_t result = s7RiscvEvalInt<20'000'000ull>(expr);
+	int64_t result;
+	try {
+		result = s7RiscvEvalInt<200'000'000ull>(expr);
+	} catch (const std::exception& e) {
+		fprintf(stderr, "EXCEPTION: %s\n", e.what());
+		_exit(1);
+	}
 	printf("result = %lld (expected %lld)\n", (long long)result, (long long)kExpected);
 	fflush(stdout);
 

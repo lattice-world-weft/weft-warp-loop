@@ -21,10 +21,11 @@
 // last rung, stop and report budgetHit (bool result = #t, since
 // budgetHit != provablyNone). One real, deliberate deviation from the
 // Lean source: certifyWitness's seed for the *next* rung is implicit
-// (Plausible manages its own RNG state internally); here the seed is
-// threaded explicitly and advanced once per rung via
-// qc-xorshift32-next, since this port has no hidden global RNG state
-// to depend on - determinism requires the caller to see exactly what
+// (Plausible manages its own RNG state internally, via the process-
+// global IO.stdGenRef every certify call mutates in place); here the
+// seed is threaded explicitly and advanced once per rung via
+// qc-next-seed, since this port has no hidden global RNG state to
+// depend on - determinism requires the caller to see exactly what
 // seed produced what result.
 
 define-record(level, idx, walk-steps, fin-bound, num-inst)
@@ -38,7 +39,7 @@ define certify-witness-loop(candidate-is-witness, readback, levels, seed):
       | readback-found(rb): (list #t idx (list "htn-planner-witness" idx (list 'found (readback-witness-idx rb))))
       | cert: (list #f idx (list "htn-planner-witness" idx 'provablyNone))
       | null?(cdr(levels)): (list #t idx (list "htn-planner-witness" idx 'budgetHit))
-      | else: certify-witness-loop(candidate-is-witness, readback, cdr(levels), qc-xorshift32-next(seed))
+      | else: certify-witness-loop(candidate-is-witness, readback, cdr(levels), qc-next-seed(seed))
 
 define certify-witness(candidate-is-witness, readback, levels, seed):
   certify-witness-loop(candidate-is-witness, readback, levels, seed)

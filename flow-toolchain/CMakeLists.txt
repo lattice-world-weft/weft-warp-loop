@@ -547,6 +547,15 @@ add_executable(s7_riscv_taskweft_witnessdag_test
 target_include_directories(s7_riscv_taskweft_witnessdag_test PRIVATE examples)
 target_link_libraries(s7_riscv_taskweft_witnessdag_test PRIVATE riscv)
 
+# --- s7_riscv_qc_fuzz_test: verifies qc-fuzz.shrub's StdGen/randNat port
+# against a hand-computed reference (Lean core's Init/Data/Random.lean
+# algorithm, re-implemented independently in Python for comparison).
+add_executable(s7_riscv_qc_fuzz_test
+  examples/s7_riscv_qc_fuzz_test.cpp
+  examples/s7_riscv_core.cpp)
+target_include_directories(s7_riscv_qc_fuzz_test PRIVATE examples)
+target_link_libraries(s7_riscv_qc_fuzz_test PRIVATE riscv)
+
 # --- s7_riscv_taskweft_layer6_integration_test: Layer 6 of the taskweft
 # port - composes find-plan (goals) + has-capability (ReBAC) +
 # all-constraints-satisfied (temporal) over one hand-traced scenario.

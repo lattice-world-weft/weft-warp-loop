@@ -1,0 +1,6 @@
+(define (manifold-merge-name ) "manifold-merge")
+(define (planner-smoke-name ) "planner-smoke")
+(define (manifold-merge-cmd params) (list 'command (manifold-merge-name) params))
+(define (planner-smoke-cmd ) (list 'command (planner-smoke-name) '()))
+(define (execute-ectgtn-command elt) (cond ((equal? (car elt) 'command) (list 'unhandled-command (car (cdr elt)))) ((equal? (car elt) 'action) (list 'action-not-executable (car (cdr elt)))) (else (list 'unknown-plan-element))))
+(define (execute-plan plan) (cond ((null? plan) '()) (else (cons (execute-ectgtn-command (car plan)) (execute-plan (cdr plan))))))

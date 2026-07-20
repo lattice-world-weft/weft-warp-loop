@@ -209,12 +209,27 @@ def block_to_body(block):
     return [line_to_sexpr(header, child) for header, child in block]
 
 
+_BLOCK_KEYWORDS = ('define ', 'let ', 'let(', 'let*(', 'cond')
+
+
 def line_to_sexpr(header, child):
     if header.endswith(':'):
         header = header[:-1].strip()
         return block_header_to_sexpr(header, child)
     if child is not None:
         raise ShrubberyError(f"line has an indented block but no trailing ':': {header!r}")
+    # A line starting with a block keyword but with no trailing ':' is
+    # almost always a mistake (an inline single-line body, e.g.
+    # 'define f(): body' on one line, is NOT supported - the body must
+    # be on its own indented line) rather than a deliberate opaque term -
+    # fail loudly here instead of silently passing it through as raw
+    # text, which produced confusing downstream errors the first time
+    # this happened.
+    if header.startswith(_BLOCK_KEYWORDS) or header == 'cond':
+        raise ShrubberyError(
+            f"line looks like a block header (starts with a reserved keyword) but has no "
+            f"trailing ':' - inline single-line bodies are not supported, the body must be "
+            f"on its own indented line: {header!r}")
     return term_to_sexpr(header)
 
 

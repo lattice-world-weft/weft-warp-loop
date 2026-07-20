@@ -457,6 +457,14 @@ add_executable(s7_riscv_taskweft_types_test
 target_include_directories(s7_riscv_taskweft_types_test PRIVATE examples)
 target_link_libraries(s7_riscv_taskweft_types_test PRIVATE riscv)
 
+# --- s7_riscv_taskweft_commands_test: Layer 1 (part) of the taskweft port -
+# verifies taskweft-commands.shrub.
+add_executable(s7_riscv_taskweft_commands_test
+  examples/s7_riscv_taskweft_commands_test.cpp
+  examples/s7_riscv_core.cpp)
+target_include_directories(s7_riscv_taskweft_commands_test PRIVATE examples)
+target_link_libraries(s7_riscv_taskweft_commands_test PRIVATE riscv)
+
 # --- s7_riscv_actor_test: a real Flow actor (s7_riscv_actor.actor.cpp)
 # calling into the libriscv-sandboxed s7 guest (riscv-guests/s7_guest.elf,
 # built from riscv-guests/s7_guest_main.c - see riscv-guests/README.md for

@@ -54,9 +54,16 @@ effects to only the players who'd actually see them.
 - [ ] Three s7 Lisp spell scripts (bolt/heal/shield) mapping sigil shape
   parameters to effect + magnitude + duration — no scripted content
   exists yet, only the sandbox mechanism (ADR 0006)
-- [ ] Godot client: stroke-capture input, sending SIG, and rendering
-  both the player's own zone-server-driven movement and spell-effect
-  entities — no client exists yet, this repo is server-only so far
+- [ ] Default adapter: a headless, RCON-compatible terminal (Python +
+  Textual, MIT-licensed — see
+  [ADR 0050](docs/decisions/0050-hexagonal-ports-adapters-rcon-default-adapter-supersedes-0010.md))
+  that speaks the real Source RCON wire protocol, internally acting as
+  a ZPB client (reusing `fanout_load_client`'s proven QUIC/ZPB
+  connection code), showing tick-rate/entity/RTT state at full
+  fidelity as a diagnostic tool, with play (movement/action commands)
+  as a genuinely supported secondary capability — not the same task as
+  a Godot client, which ADR 0050 demotes to an optional, non-blocking,
+  later adapter
 - [ ] Deterministic shape-parameter extraction from `sketch-core`'s
   tessellated output (skip cassie's beautify solver for the vertical
   slice; ADR 0003's bit-identical-beautify requirement only matters once

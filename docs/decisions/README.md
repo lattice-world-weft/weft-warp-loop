@@ -52,3 +52,4 @@ weft-warp-loop stack. One decision per file, numbered in acceptance order.
 - [0047 — Godot-sandbox as the scripted-content backend, and taskweft-as-compiled-front-end — reviewed, superseded in practice](0047-godot-sandbox-vs-bespoke-s7-stack-reviewed-superseded.md)
 - [0048 — Don't reimplement GDScript via shrubbery+s7 - adopt godot-sandbox-gdscript-compiler directly if GDScript-in-sandbox is wanted](0048-dont-reimplement-gdscript-via-shrubbery-s7.md)
 - [0049 — qc-fuzz.shrub ports Plausible's real StdGen/randNat/checkIO algorithm, not a xorshift32 stand-in](0049-qc-fuzz-ports-real-plausible-stdgen-not-a-standin.md)
+- [0050 — Adopt hexagonal core/ports/adapters; Godot demoted to one adapter among several; RCON-compatible terminal is the default adapter](0050-hexagonal-ports-adapters-rcon-default-adapter-supersedes-0010.md)

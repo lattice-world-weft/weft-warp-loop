@@ -1,16 +1,5 @@
 # weft-warp-loop
 
-Bootstrap seed for `lattice-world-weft`: an original, PSO-style (hub →
-instanced field missions → combo action combat → loot contention)
-multiplayer game, with an Elixir/OTP platform layer, a Flow-based C++
-zone/world server, and a Godot client.
-
-The roadmap lives as data, not prose, in `plan/bootstrap-domain.json` /
-`plan/bootstrap-plan.json` (a `taskweft` HTN plan) — each step is proven
-working before the next begins.
-
-## Architecture
-
 - **Zone/world server**: a standalone Flow-based C++ process. Godot is
   client-only (rendering, input, XR).
 - **Networking**: Flow terminates QUIC/HTTP-3/WebTransport itself, via a
@@ -38,15 +27,3 @@ working before the next begins.
 
 See `flow-toolchain/NOTICE.md` for commit/license provenance and
 `docs/decisions/` for architecture decision records.
-
-## Reference material (study only — not adopted as code)
-
-- [`newserv`](https://github.com/fuzziqersoftware/newserv) (MIT) — PSO
-  server logic/protocol reference.
-- [Carbon Engine](https://github.com/carbonengine) (MIT) — EVE Online
-  world-simulation/networking reference.
-
-## License
-
-MIT — see `LICENSE`. No GPL/AGPL dependencies or derived code, no
-Colobot; no copyrighted or copyleft game data/assets.

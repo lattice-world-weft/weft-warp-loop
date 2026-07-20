@@ -52,12 +52,21 @@ def ZoneWorld.authorityFor (w : ZoneWorld) (pos : Pos3) : Option Id :=
 
 /-- Every connId that should receive `publisherConnId`'s update at curve
     index `idx`: every other entity's connId in the authority zone for
-    `idx`, plus every entity's connId in a curve-adjacent zone (the
-    interest ghosts, `adjacentZones`). Entities are tracked per-zone
-    (`Zone.entities`), matching `Room.subscribers`'s existing flat-array
-    shape, rather than in a separate global entity table - a zone's own
-    membership list is exactly what changes on migration (`moveEntity`
-    below).
+    `idx` (blanket visibility among zone-mates - matching
+    `AuthorityInterest.lean`'s own split, authority membership is full
+    mutual visibility, not filtered), plus - in a curve-adjacent zone
+    (`adjacentZones`) - only entities whose k-tick ghost radius
+    (`withinGhostRange`, `Zone.lean`) could actually put them in range of
+    the publisher within `interestLookahead` ticks. Replaces the earlier
+    "everyone in an adjacent zone is interest, unconditionally" model:
+    an adjacent zone can hold entities that are, in real distance,
+    nowhere near the zone boundary the publisher is close to - Hilbert-
+    curve adjacency is a *candidate* filter (this zone's range is next to
+    mine), ghost range is the *real* interest test on top of it. Entities
+    are tracked per-zone (`Zone.entities`), matching `Room.subscribers`'s
+    existing flat-array shape, rather than in a separate global entity
+    table - a zone's own membership list is exactly what changes on
+    migration (`moveEntity` below).
 
     No dedup check against `result` here (an earlier version had one,
     `!result.contains connId`): `reach`'s zones are pairwise distinct
@@ -73,43 +82,57 @@ def ZoneWorld.authorityFor (w : ZoneWorld) (pos : Pos3) : Option Id :=
     correctness benefit - a real algorithmic cost this repo's own load
     testing (fanout_load_client) measured directly (super-quadratic
     growth well past what O(N^2) target construction alone would predict,
-    since this ran once per publisher per tick).
-
-    Still blanket "everyone in reach hears everyone" visibility, not real
-    ghost-expansion interest yet (see `EntityRecord`'s velocity fields,
-    added but not yet consumed here) - that replacement is later, separate
-    work, not silently assumed solved by adding the fields alone. -/
+    since this ran once per publisher per tick). -/
 def ZoneWorld.targetsForIndex (w : ZoneWorld) (publisherConnId : UInt64) (idx : UInt64) : Array UInt64 := Id.run do
   let live := w.liveZones
   let plain := live.map (·.2)
   match Fanoutcore.authorityForIndex plain idx with
   | none => return #[]
   | some authIdx =>
-    let reach := #[authIdx] ++ adjacentZones plain authIdx
-    let mut result : Array UInt64 := #[]
-    for i in reach do
-      if h : i < plain.size then
-        for rec in plain[i].entities do
-          if rec.connId != publisherConnId then
-            result := result.push rec.connId
-    return result
+    if h : authIdx < plain.size then
+      let authZone := plain[authIdx]
+      let pubRec := authZone.entities.find? (·.connId == publisherConnId)
+      let pubPos := (pubRec.map (·.pos)).getD { x := 0, y := 0, z := 0 }
+      let pubVx := (pubRec.map (·.vx)).getD 0
+      let pubVy := (pubRec.map (·.vy)).getD 0
+      let pubVz := (pubRec.map (·.vz)).getD 0
+      let pubK := (pubRec.map (·.lookaheadTicks)).getD defaultLookaheadTicks
+      let mut result : Array UInt64 := #[]
+      for rec in authZone.entities do
+        if rec.connId != publisherConnId then
+          result := result.push rec.connId
+      for j in adjacentZones plain authIdx do
+        if h2 : j < plain.size then
+          for rec in plain[j].entities do
+            if rec.connId != publisherConnId &&
+               withinGhostRange pubPos pubVx pubVy pubVz pubK rec.pos rec.vx rec.vy rec.vz rec.lookaheadTicks then
+              result := result.push rec.connId
+      return result
+    else return #[]
 
 def ZoneWorld.targetsFor (w : ZoneWorld) (publisherConnId : UInt64) (pos : Pos3) : Array UInt64 :=
   w.targetsForIndex publisherConnId (hilbert3D w.bits pos)
 
-/-- Moves (or first-places) `connId`'s entity to curve index `idx` with the
-    given velocity magnitude per axis (μm/tick, absolute value - see
-    `EntityRecord`): removes it from whichever zone it was previously
-    authoritative in (a linear scan over live zones' entity lists - fine
-    at this scale, matching `Room.unsub`'s own linear `filter`), then adds
-    it to the zone now authoritative for `idx`, if any, carrying the new
-    velocity forward. This is the migration operation
-    (`AuthorityInterest.lean`'s "authority transfer") - a first version
-    with no hysteresis threshold (`AuthorityInterest.lean`'s
-    `hysteresisThreshold`), so an entity oscillating exactly on a zone
-    boundary can migrate every call; that refinement is later, separate
-    work, not silently assumed solved here. -/
-def ZoneWorld.moveEntityToIndexV (w : ZoneWorld) (connId idx vx vy vz : UInt64) : ZoneWorld := Id.run do
+/-- Moves (or first-places) `connId`'s entity to curve index `idx` (with
+    `pos` its real position - used for ghost-range checks, which need
+    real micrometre distance, not curve-index distance; defaults to the
+    origin for callers that only care about curve-index placement, e.g.
+    most of TestProps.lean's plain authority/migration/split property
+    tests) with the given velocity magnitude per axis (μm/tick, absolute
+    value - see `EntityRecord`) and lookahead window in ticks (`rttTicks`,
+    sourced from the connection's own measured RTT - `0` means no sample
+    yet and falls back to `defaultLookaheadTicks`): removes it from
+    whichever zone it was previously authoritative in (a linear scan over
+    live zones' entity lists - fine at this scale, matching `Room.unsub`'s
+    own linear `filter`), then adds it to the zone now authoritative for
+    `idx`, if any, carrying the new position/velocity/RTT forward. This is
+    the migration operation (`AuthorityInterest.lean`'s "authority
+    transfer") - a first version with no hysteresis threshold
+    (`AuthorityInterest.lean`'s `hysteresisThreshold`), so an entity
+    oscillating exactly on a zone boundary can migrate every call; that
+    refinement is later, separate work, not silently assumed solved
+    here. -/
+def ZoneWorld.moveEntityToIndexV (w : ZoneWorld) (connId idx vx vy vz : UInt64) (rttTicks : UInt64 := 0) (pos : Pos3 := { x := 0, y := 0, z := 0 }) : ZoneWorld := Id.run do
   let mut zones := w.zones
   for (id, zone) in w.liveZones do
     if zone.entities.any (·.connId == connId) then
@@ -121,7 +144,7 @@ def ZoneWorld.moveEntityToIndexV (w : ZoneWorld) (connId idx vx vy vz : UInt64) 
     match w.zones.find zoneId with
     | none => return w
     | some zone =>
-      return { w with zones := w.zones.update zoneId (zone.sub { connId, idx, vx, vy, vz }) }
+      return { w with zones := w.zones.update zoneId (zone.sub { connId, idx, pos, vx, vy, vz, rttTicks }) }
 
 /-- `moveEntityToIndexV` with zero velocity - the convenience entry point
     for callers that don't track velocity (most of TestProps.lean's plain
@@ -130,8 +153,8 @@ def ZoneWorld.moveEntityToIndexV (w : ZoneWorld) (connId idx vx vy vz : UInt64) 
 def ZoneWorld.moveEntityToIndex (w : ZoneWorld) (connId : UInt64) (idx : UInt64) : ZoneWorld :=
   w.moveEntityToIndexV connId idx 0 0 0
 
-def ZoneWorld.moveEntityV (w : ZoneWorld) (connId : UInt64) (pos : Pos3) (vx vy vz : UInt64) : ZoneWorld :=
-  w.moveEntityToIndexV connId (hilbert3D w.bits pos) vx vy vz
+def ZoneWorld.moveEntityV (w : ZoneWorld) (connId : UInt64) (pos : Pos3) (vx vy vz : UInt64) (rttTicks : UInt64 := 0) : ZoneWorld :=
+  w.moveEntityToIndexV connId (hilbert3D w.bits pos) vx vy vz rttTicks pos
 
 def ZoneWorld.moveEntity (w : ZoneWorld) (connId : UInt64) (pos : Pos3) : ZoneWorld :=
   w.moveEntityToIndex connId (hilbert3D w.bits pos)

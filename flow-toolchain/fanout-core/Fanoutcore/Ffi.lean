@@ -92,15 +92,19 @@ def entityMove (connId : UInt64) (x : Int64) (y : Int64) (z : Int64) : IO Unit :
   stateRef.set { s with zoneWorld := rebalanceAfterMove moved pos }
 
 /-- `entityMove` with a known velocity magnitude per axis (μm/tick,
-    absolute value - `EntityRecord`), for k-tick ghost expansion once a
-    caller (the wire protocol, later work) actually sends it. `entityMove`
-    above stays the zero-velocity convenience path for callers that don't
-    track it. -/
+    absolute value - `EntityRecord`) and RTT-derived lookahead window in
+    ticks (`rttTicks` - `0` means no RTT sample yet, falls back to
+    `defaultLookaheadTicks`; the caller converts picoquic's own measured
+    RTT to a tick count before calling, keeping this module's arithmetic
+    in one unit system), for k-tick ghost expansion once a caller (the
+    wire protocol, later work) actually sends both. `entityMove` above
+    stays the zero-velocity/default-lookahead convenience path for
+    callers that don't track either. -/
 @[export fanout_entity_move_v]
-def entityMoveV (connId : UInt64) (x : Int64) (y : Int64) (z : Int64) (vx vy vz : UInt64) : IO Unit := do
+def entityMoveV (connId : UInt64) (x : Int64) (y : Int64) (z : Int64) (vx vy vz : UInt64) (rttTicks : UInt64) : IO Unit := do
   let s ← stateRef.get
   let pos : Pos3 := { x := x, y := y, z := z }
-  let moved := s.zoneWorld.moveEntityV connId pos vx vy vz
+  let moved := s.zoneWorld.moveEntityV connId pos vx vy vz rttTicks
   stateRef.set { s with zoneWorld := rebalanceAfterMove moved pos }
 
 @[export fanout_entity_remove]

@@ -120,6 +120,59 @@ def hilbert3D (bits : Nat) (p : Pos3) : UInt64 :=
 def ghostExpansion (v aHalf k : UInt64) : UInt64 :=
   v * k + aHalf * k * k
 
+/-- Fallback lookahead (ticks) for an entity with no RTT sample yet (a
+    freshly connected client, before picoquic has measured one) -
+    `AuthorityInterest.lean`'s own `interestLookahead` value ("a full RTT
+    of lookahead" at that project's tick rate), used here only as a floor,
+    not the real per-entity value: a fixed global lookahead doesn't adapt
+    to actual client latency - a 20ms-ping and a 300ms-ping client need
+    different amounts of lead time to register a ghost before they
+    actually cross a boundary, and picoquic already measures real RTT per
+    connection (`picoquic_get_rtt`), so there's no reason to guess with
+    one constant once that measurement exists. -/
+def defaultLookaheadTicks : UInt64 := 6
+
+/-- Per-axis absolute distance between two signed micrometer coordinates. -/
+def axisDist (a b : Int64) : UInt64 :=
+  if a >= b then (a - b).toUInt64 else (b - a).toUInt64
+
+/-- True iff a publish from an entity at real position `pubPos` could
+    plausibly reach an entity at `targetPos` within *each entity's own*
+    lookahead window (`pubK`/`targetK` - typically each side's own
+    `EntityRecord.lookaheadTicks`, not a single shared value: a low-
+    latency publisher and a high-latency target each need their own
+    ghost radius evaluated over their own real RTT, not one side's
+    borrowed onto the other): per-axis real distance (micrometres,
+    `AuthorityInterest.lean`'s own `overlapsAxis` check, not curve-index
+    distance - a real, measured bug found here: at this project's
+    `zoneBits = 21` quantization, one curve-index unit represents
+    roughly 8800km, so a realistic ghost expansion - even a 10m/s sprint
+    over 6 ticks, 60m - always rounds to *zero* curve-index units,
+    silently excluding every adjacent-zone entity regardless of real
+    proximity. Curve-index distance is this system's own established
+    proxy for spatial locality elsewhere (zone partitioning), but it is
+    far too coarse a unit for a ghost-expansion distance that is orders
+    of magnitude smaller than one grid cell) is within either entity's
+    own per-axis ghost expansion (whichever is due to move fast enough
+    to close the gap - a stationary target can still be reached by a
+    fast-moving publisher, and vice versa, so this is not just the
+    publisher's own radius, matching `overlapsAxis`'s own `pos - expand
+    <= zMax && pos + expand >= zMin` shape). Replaces "same zone/adjacent
+    zone = always interested" (the previous blanket visibility model)
+    with genuine predictive interest - an entity only receives a
+    ghost/publish from something that could actually reach it in its own
+    lookahead window, not everything that happens to share a zone. -/
+def withinGhostRange (pubPos : Pos3) (pubVx pubVy pubVz pubK : UInt64) (targetPos : Pos3) (targetVx targetVy targetVz targetK : UInt64) : Bool :=
+  let pubExX := ghostExpansion pubVx 0 pubK
+  let pubExY := ghostExpansion pubVy 0 pubK
+  let pubExZ := ghostExpansion pubVz 0 pubK
+  let targetExX := ghostExpansion targetVx 0 targetK
+  let targetExY := ghostExpansion targetVy 0 targetK
+  let targetExZ := ghostExpansion targetVz 0 targetK
+  axisDist pubPos.x targetPos.x <= pubExX + targetExX &&
+  axisDist pubPos.y targetPos.y <= pubExY + targetExY &&
+  axisDist pubPos.z targetPos.z <= pubExZ + targetExZ
+
 /-- A zone's authority range along the 1D Hilbert curve: the half-open
     interval `[start, stop)` of curve indices this zone owns. Variable-
     length by design (ADR 0008): a Hilbert curve maps a 1D range to a
@@ -150,7 +203,7 @@ def disjointRanges (rs : Array ZoneRange) : Bool :=
       i == j || !(ZoneRange.overlaps rs[i]! rs[j]!)
 
 /-- One entity's authority record: connId, its curve index (for authority
-    range lookups), and its velocity magnitude per axis (micrometres/tick,
+    range lookups), its velocity magnitude per axis (micrometres/tick,
     *absolute value* - matching `AuthorityInterest.lean`'s own convention:
     k-tick ghost expansion (`Formula.lean`'s `expansion v a_half k := v*k +
     a_half*k*k`) only needs how far something could move, not which
@@ -158,14 +211,30 @@ def disjointRanges (rs : Array ZoneRange) : Bool :=
     formula immediately discards via `abs`. Zero velocity (the default
     before any `entityMoveV`-style call updates it) means zero ghost
     expansion - an entity with no known velocity is treated as
-    stationary, not unbounded. -/
+    stationary, not unbounded), and its lookahead window in ticks
+    (`rttTicks`, sourced from the connection's own measured RTT -
+    picoquic already tracks this per connection - converted to ticks at
+    the FFI boundary by the caller, not derived here: keeps this module's
+    own arithmetic in one unit system, matching `Shared/Types.lean`'s own
+    "convert at the FFI boundary" convention). `0` means no RTT sample
+    yet (a freshly connected entity) and falls back to
+    `defaultLookaheadTicks`, not to zero lookahead - an entity with
+    unknown latency should get *more* lead time until proven otherwise,
+    not none. -/
 structure EntityRecord where
-  connId : UInt64
-  idx    : UInt64
-  vx     : UInt64 := 0
-  vy     : UInt64 := 0
-  vz     : UInt64 := 0
+  connId   : UInt64
+  idx      : UInt64
+  pos      : Pos3 := { x := 0, y := 0, z := 0 }
+  vx       : UInt64 := 0
+  vy       : UInt64 := 0
+  vz       : UInt64 := 0
+  rttTicks : UInt64 := 0
   deriving Repr, BEq, Inhabited
+
+/-- `rec.rttTicks`, or `defaultLookaheadTicks` if no RTT sample is known
+    yet (`rttTicks = 0`, the `EntityRecord` default). -/
+def EntityRecord.lookaheadTicks (rec : EntityRecord) : UInt64 :=
+  if rec.rttTicks == 0 then defaultLookaheadTicks else rec.rttTicks
 
 /-- A zone: its authority range, and the entities it currently simulates
     (analogous to `Room.subscribers`, but authority - one owner - not

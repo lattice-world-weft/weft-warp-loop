@@ -403,6 +403,56 @@ def mergeKeepsRangesDisjointCheck (depth : Nat) (conns idxs : List Nat) : Bool :
       let w' := w.maybeMergeSiblings firstId
       disjointRanges (w'.liveZones.map fun (_, z) => z.range)
 
+/-- True iff `withinGhostRange` is symmetric in its two entities: whether
+    A could reach B doesn't depend on which one is labelled "publisher" -
+    `axisDist` is itself symmetric and each side's ghost expansion is
+    added (not subtracted or otherwise order-sensitive), so swapping the
+    two entities' roles must give the same answer. A real, testable
+    consequence of the fix (comparing real per-axis micrometre distance,
+    not curve-index distance) - the pure function is simple enough to
+    check this directly rather than only through a full ZoneWorld
+    scenario. -/
+def withinGhostRangeSymmetricCheck
+    (px py pz pvx pvy pvz pk tx ty tz tvx tvy tvz tk : Nat) : Bool :=
+  let p : Pos3 := { x := Int64.ofNat px, y := Int64.ofNat py, z := Int64.ofNat pz }
+  let t : Pos3 := { x := Int64.ofNat tx, y := Int64.ofNat ty, z := Int64.ofNat tz }
+  withinGhostRange p pvx.toUInt64 pvy.toUInt64 pvz.toUInt64 pk.toUInt64 t tvx.toUInt64 tvy.toUInt64 tvz.toUInt64 tk.toUInt64
+    == withinGhostRange t tvx.toUInt64 tvy.toUInt64 tvz.toUInt64 tk.toUInt64 p pvx.toUInt64 pvy.toUInt64 pvz.toUInt64 pk.toUInt64
+
+/-- True iff, with both entities stationary (zero velocity on every
+    axis), `withinGhostRange` is true iff the two positions are exactly
+    equal - zero velocity means zero ghost expansion (`ghostExpansion v _
+    _ = 0` when `v = 0`), so the only way a zero-radius entity is "in
+    range" of another zero-radius entity is if they're already at the
+    same point. This is the property the earlier curve-index-distance
+    bug violated in spirit (everything effectively had zero *curve-index*
+    radius at realistic velocities, but was tested as if position
+    equality was never actually required) - now it's true by construction
+    for the degenerate all-zero case, and real (nonzero) cases are
+    covered by the monotonicity check below. -/
+def withinGhostRangeZeroVelocityCheck (px py pz tx ty tz k : Nat) : Bool :=
+  let p : Pos3 := { x := Int64.ofNat px, y := Int64.ofNat py, z := Int64.ofNat pz }
+  let t : Pos3 := { x := Int64.ofNat tx, y := Int64.ofNat ty, z := Int64.ofNat tz }
+  let inRange := withinGhostRange p 0 0 0 k.toUInt64 t 0 0 0 k.toUInt64
+  inRange == (p == t)
+
+/-- True iff increasing one entity's velocity on every axis (holding
+    everything else fixed) never turns an in-range determination into
+    out-of-range - `ghostExpansion` is monotone non-decreasing in `v`
+    (`v*k + aHalf*k^2`, `aHalf = 0` here), so a larger radius can only
+    keep covering (or newly cover) the same fixed distance, never stop
+    covering it. Directly exercises "more velocity means more reach,"
+    the real-world property the whole ghost-expansion mechanism exists
+    to provide. -/
+def withinGhostRangeMonotoneInVelocityCheck
+    (px py pz pvx pvy pvz pk tx ty tz tvx tvy tvz tk extra : Nat) : Bool :=
+  let p : Pos3 := { x := Int64.ofNat px, y := Int64.ofNat py, z := Int64.ofNat pz }
+  let t : Pos3 := { x := Int64.ofNat tx, y := Int64.ofNat ty, z := Int64.ofNat tz }
+  let before := withinGhostRange p pvx.toUInt64 pvy.toUInt64 pvz.toUInt64 pk.toUInt64 t tvx.toUInt64 tvy.toUInt64 tvz.toUInt64 tk.toUInt64
+  let after := withinGhostRange p (pvx + extra).toUInt64 (pvy + extra).toUInt64 (pvz + extra).toUInt64 pk.toUInt64
+    t tvx.toUInt64 tvy.toUInt64 tvz.toUInt64 tk.toUInt64
+  !before || after
+
 /-- Run one property; print the counterexample and exit non-zero on failure. -/
 def runCheck (name : String) (p : Prop) [Testable p] (cfg : Configuration) : IO Unit := do
   IO.println s!"prop: {name}"
@@ -549,5 +599,30 @@ def main : IO Unit := do
      NamedBinder "conns" <| ∀ (conns : List Nat),
      NamedBinder "idxs" <| ∀ (idxs : List Nat),
       mergeKeepsRangesDisjointCheck depth conns idxs = true) cfg
+
+  runCheck "withinGhostRange is symmetric in its two entities"
+    (NamedBinder "px" <| ∀ (px : Nat), NamedBinder "py" <| ∀ (py : Nat), NamedBinder "pz" <| ∀ (pz : Nat),
+     NamedBinder "pvx" <| ∀ (pvx : Nat), NamedBinder "pvy" <| ∀ (pvy : Nat), NamedBinder "pvz" <| ∀ (pvz : Nat),
+     NamedBinder "pk" <| ∀ (pk : Nat),
+     NamedBinder "tx" <| ∀ (tx : Nat), NamedBinder "ty" <| ∀ (ty : Nat), NamedBinder "tz" <| ∀ (tz : Nat),
+     NamedBinder "tvx" <| ∀ (tvx : Nat), NamedBinder "tvy" <| ∀ (tvy : Nat), NamedBinder "tvz" <| ∀ (tvz : Nat),
+     NamedBinder "tk" <| ∀ (tk : Nat),
+      withinGhostRangeSymmetricCheck px py pz pvx pvy pvz pk tx ty tz tvx tvy tvz tk = true) cfg
+
+  runCheck "withinGhostRange with both entities stationary is true iff positions are exactly equal"
+    (NamedBinder "px" <| ∀ (px : Nat), NamedBinder "py" <| ∀ (py : Nat), NamedBinder "pz" <| ∀ (pz : Nat),
+     NamedBinder "tx" <| ∀ (tx : Nat), NamedBinder "ty" <| ∀ (ty : Nat), NamedBinder "tz" <| ∀ (tz : Nat),
+     NamedBinder "k" <| ∀ (k : Nat),
+      withinGhostRangeZeroVelocityCheck px py pz tx ty tz k = true) cfg
+
+  runCheck "withinGhostRange is monotone non-decreasing in velocity"
+    (NamedBinder "px" <| ∀ (px : Nat), NamedBinder "py" <| ∀ (py : Nat), NamedBinder "pz" <| ∀ (pz : Nat),
+     NamedBinder "pvx" <| ∀ (pvx : Nat), NamedBinder "pvy" <| ∀ (pvy : Nat), NamedBinder "pvz" <| ∀ (pvz : Nat),
+     NamedBinder "pk" <| ∀ (pk : Nat),
+     NamedBinder "tx" <| ∀ (tx : Nat), NamedBinder "ty" <| ∀ (ty : Nat), NamedBinder "tz" <| ∀ (tz : Nat),
+     NamedBinder "tvx" <| ∀ (tvx : Nat), NamedBinder "tvy" <| ∀ (tvy : Nat), NamedBinder "tvz" <| ∀ (tvz : Nat),
+     NamedBinder "tk" <| ∀ (tk : Nat),
+     NamedBinder "extra" <| ∀ (extra : Nat),
+      withinGhostRangeMonotoneInVelocityCheck px py pz pvx pvy pvz pk tx ty tz tvx tvy tvz tk extra = true) cfg
 
   IO.println "ALL PROPERTY TESTS PASSED"

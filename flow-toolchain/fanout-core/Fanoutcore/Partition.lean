@@ -2,23 +2,23 @@ import Fanoutcore.Zone
 
 namespace Fanoutcore
 
-/- AV1-style symmetric split/merge for zone authority, adapted from the real
-   prior art (v-sekai-multiplayer-fabric/lean-spatial-oracle's
+/- AV1-style symmetric split/merge for zone authority, adapted from
+   v-sekai-multiplayer-fabric/lean-spatial-oracle's
    `PredictiveBvh/core/Partition.lean` + `Shared/Types.lean`'s `PartitionNode`/
-   `EClass`/`SpatialEGraph`). What transfers directly: the octree-cell math (a
-   `ZoneRange` at Hilbert depth `bits` *is* an octree cell - `hilbertIndexOfGrid`
+   `EClass`/`SpatialEGraph`. What transfers directly: the octree-cell math (a
+   `ZoneRange` at Hilbert depth `bits` *is* an octree cell: `hilbertIndexOfGrid`
    interleaves exactly 3 bits per level, so every 3 bits of curve index consumed
-   from the top is one octree level, matching that repo's own `clz30`/
+   from the top is one octree level, matching that repo's `clz30`/
    `cellWidthNorm` depth arithmetic), and the *structure* of a symmetric
    split-vs-stay-merged cost comparison (their `PartitionNode.none_split` vs
    `.oct`, compared via one cost evaluator, not a separate bolted-on merge
    pass). What does NOT transfer: their cost function itself
    (`predictiveSAH := bvhTraversalCost * surfaceArea bounds`) targets ray-BVH
-   traversal cost - spatial compactness - not this project's actual objective.
+   traversal cost (spatial compactness), not this project's objective.
    `targetsForIndex`'s real cost is `Θ(K^2)` in a zone's own population (proven
-   by this project's own O(N^3) regression, fixed in ZoneDispatch.lean's
+   by this project's O(N^3) regression, fixed in ZoneDispatch.lean's
    `targetsForIndex` doc comment), so the cost function here is population-
-   based, not surface-area-based - reusing their split vocabulary and octree
+   based, not surface-area-based: it reuses their split vocabulary and octree
    depth math, not their ray-tracing-specific heuristic. -/
 
 /-- This zone-world's Hilbert quantization depth in octree levels: `bits` per
@@ -33,7 +33,7 @@ def octreeMaxDepth (bits : Nat) : Nat := bits
     `d`, and its start must be a multiple of that length. `none` for a range
     that isn't octree-aligned (e.g. this project's earlier `maybeSplitZone`,
     which bisected at an arbitrary midpoint rather than along real octree
-    boundaries - exactly the correctness gap this module exists to fix). -/
+    boundaries, the correctness gap this module exists to fix). -/
 def zoneRangeDepth (bits : Nat) (r : ZoneRange) : Option Nat := Id.run do
   let len := r.stop - r.start
   if len == 0 then return none
@@ -54,7 +54,7 @@ def zoneRangeDepth (bits : Nat) (r : ZoneRange) : Option Nat := Id.run do
   return some d
 
 /-- The 8 equal child ranges of an octree-aligned `ZoneRange` one level down
-    (depth `d+1`), in Hilbert curve order - the 8-way analogue of
+    (depth `d+1`), in Hilbert curve order. The 8-way analogue of
     `maybeSplitZone`'s old 2-way midpoint bisection, now along real octree
     boundaries instead of an arbitrary split. `none` if `r` is already at
     `octreeMaxDepth bits` (a single-point cell, per `maybeSplitZone`'s
@@ -71,18 +71,18 @@ def octreeChildren (bits : Nat) (r : ZoneRange) : Option (Array ZoneRange) := do
 /-- Population-based leaf cost: `Θ(K^2)` in this zone's own live entity count,
     matching `targetsForIndex`'s real per-tick fanout cost for a zone with no
     further split (every entity's publish reaches every other entity in the
-    same zone). This is this project's own cost function, not the real prior
-    art's ray-tracing `predictiveSAH` - see this file's header comment. -/
+    same zone). This project's own cost function, not the prior art's
+    ray-tracing `predictiveSAH`; see this file's header comment. -/
 def leafCost (population : Nat) : Nat := population * population
 
 /-- The fixed overhead of maintaining one additional zone as a live,
-    independently-scheduled unit (SlotMap slot, its own authority bookkeeping)
-    - the cost that must be paid back by a split's reduced leaf costs for the
+    independently-scheduled unit (SlotMap slot, its own authority bookkeeping):
+    the cost that must be paid back by a split's reduced leaf costs for the
     split to be worthwhile. Charged once per child a split creates (8 for a
-    full octree split), matching `PartitionNode`'s own `bvhTraversalCost *
+    full octree split), matching `PartitionNode`'s `bvhTraversalCost *
     surfaceArea parent` traversal-step charge in shape (a cost paid for
     visiting/maintaining the split structure itself, not the leaves), sized
-    for this project's own unit (population count) rather than surface area. -/
+    for this project's unit (population count) rather than surface area. -/
 def zoneOverhead : Nat := 1
 
 /-- True iff splitting a zone of `population` entities into `childPopulations`
@@ -90,7 +90,7 @@ def zoneOverhead : Nat := 1
     is cost-favourable: sum of child leaf costs plus per-child overhead is
     strictly less than staying merged as one leaf. This is the one symmetric
     decision `PartitionNode.none_split` vs `.oct` reduces to for this
-    project's cost function - split and merge are the same comparison,
+    project's cost function: split and merge are the same comparison,
     evaluated from either direction, not two separate mechanisms. -/
 def splitIsCheaper (population : Nat) (childPopulations : Array Nat) : Bool :=
   let splitCost := (childPopulations.map fun c => leafCost c + zoneOverhead).foldl (· + ·) 0

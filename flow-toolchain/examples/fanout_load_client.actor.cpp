@@ -3,36 +3,36 @@
 //
 // A Flow-native load client for picoquic_fanout_server: one simulated
 // player, a real picoquic client connection speaking repeated ZPB
-// (zone-authority/interest publish, ADR 0008 - test_picoquic_zpb.py
+// (zone-authority/interest publish, ADR 0008; test_picoquic_zpb.py
 // proves this same verb end to end at small scale) over its own Flow
-// IUDPSocket and picoquic_quic_t context - the same receiveFrom/
-// prepare_next_packet loop shape picoquic_fanout_server.actor.cpp itself
-// uses on the server side.
+// IUDPSocket and picoquic_quic_t context, using the same receiveFrom/
+// prepare_next_packet loop shape picoquic_fanout_server.actor.cpp uses
+// on the server side.
 //
 // This exists because the earlier Python/aioquic load script
 // (simulate_players_microtraffic.py) hit a real ceiling at 40 concurrent
 // threads that turned out to be the test harness's own bottleneck (Python
-// GIL contention across OS threads each doing tight blocking-socket polls),
-// not the server's.
+// GIL contention across OS threads each doing tight blocking-socket
+// polls), not the server's.
 //
-// One quic_t/socket/connection per OS process, not per in-process actor:
-// an earlier version ran many players as concurrent Flow actors sharing
-// one process, first with one shared picoquic_quic_t (which meant a burst
-// of connections all shared one local 4-tuple and reliably triggered a
-// storm of Windows ICMP-port-unreachable/connection-reset notifications),
-// then with each player getting its own independent picoquic_quic_t
-// within that same process - which crashed: 3+ simultaneous independent
+// One quic_t/socket/connection per OS process, not per in-process actor.
+// An earlier version ran many players as concurrent Flow actors sharing
+// one process: first with one shared picoquic_quic_t, where a burst of
+// connections all shared one local 4-tuple and reliably triggered a storm
+// of Windows ICMP-port-unreachable/connection-reset notifications; then
+// with each player getting its own independent picoquic_quic_t within
+// that same process, which crashed outright. 3+ simultaneous independent
 // contexts corrupt memory in the vendored picoquic/mbedtls stack (clean
 // failure at 3, hard segfault at 4+), a usage pattern nothing else in
-// this codebase has ever exercised (every other tool here creates exactly
-// one context per process). fanout_load_client_main.actor.cpp's
-// coordinator role gets process-level isolation the way FoundationDB
-// itself does in production - one process per unit of concurrent work,
-// not many units sharing one process's memory - by relaunching this same
-// binary as a child OS process per player, matching the user's explicit
-// CockroachDB-over-FoundationDB deployment preference (one homogeneous
+// this codebase exercises (every other tool here creates exactly one
+// context per process). fanout_load_client_main.actor.cpp's coordinator
+// role gets process-level isolation the way FoundationDB does in
+// production, one process per unit of concurrent work rather than many
+// units sharing one process's memory, by relaunching this same binary as
+// a child OS process per player. This matches the user's explicit
+// CockroachDB-over-FoundationDB deployment preference: one homogeneous
 // executable for every role, not a supervisor coordinating heterogeneous
-// role-specific processes). This file is that binary's worker role: it
+// role-specific processes. This file is that binary's worker role: it
 // only ever handles one player.
 //
 // Wire protocol (matches picoquic_fanout_server.actor.cpp exactly):
@@ -89,27 +89,27 @@ std::vector<uint8_t> makePayload(int playerId, int tick) {
 
 // ZPB (ADR 0008 zone-authority/interest dispatch, wired into the wire
 // protocol in picoquic_fanout_server.actor.cpp) gets no application-level
-// reply for a publish that reaches nobody, same as PUB never did - gating
+// reply for a publish that reaches nobody, same as PUB never did. Gating
 // each tick on incoming stream data would deadlock every connection for
 // the same reason it did before switching from PUB to ZPB: nobody would
 // ever send a first publish to trigger anyone else's next one. So every
-// tick's ZPB goes out together, once, right when the connection is ready
-// - not paced by round-trips that don't exist in this protocol.
+// tick's ZPB goes out together, once, right when the connection is ready,
+// rather than paced by round-trips that don't exist in this protocol.
 //
 // Position doesn't need to be coordinated across players: the server's
 // one default zone (fanout_core_ffi.cpp's startup bootstrap) spans the
 // entire Hilbert range, so any (x, y, z) lands every player in the same
 // zone regardless of what it is. playerId/tick only need to vary the
-// coordinates deterministically, matching makePayload's own seed - this
-// is a load-generation detail, not a claim about real player positions.
+// coordinates deterministically, matching makePayload's seed. This is a
+// load-generation detail, not a claim about real player positions.
 void sendAllTicks(picoquic_cnx_t* cnx, PlayerCtx& player) {
 	player.state = PlayerState::Publishing;
 	while (player.ticksRemaining > 0) {
 		int tick = player.ticksRemaining;
 		// vx/vy/vz: this load harness doesn't model real player motion (see
-		// the position note below - any coordinate lands in the same
-		// bootstrap zone), so it reports zero velocity - a real client
-		// reports its own actual per-axis speed here, driving the server's
+		// the position note above; any coordinate lands in the same
+		// bootstrap zone), so it reports zero velocity. A real client
+		// reports its actual per-axis speed here, driving the server's
 		// k-tick ghost expansion (Fanoutcore/Zone.lean's withinGhostRange).
 		std::string zpbHeader = "ZPB " + std::to_string(player.playerId) + " " + std::to_string(tick) + " 0 0 0 0\n";
 		std::vector<uint8_t> payload = makePayload(player.playerId, tick);
@@ -136,7 +136,7 @@ int loadClientStreamCallback(picoquic_cnx_t* cnx, uint64_t streamId, uint8_t* by
 	case picoquic_callback_stream_fin:
 		// Other players' fanout deliveries landing on this stream; nothing
 		// to do here beyond acknowledging receipt (picoquic already does
-		// that at the transport level) - this player's own progression
+		// that at the transport level). This player's own progression
 		// doesn't depend on it.
 		(void)bytes;
 		(void)length;
@@ -212,20 +212,20 @@ ACTOR Future<bool> runOnePlayer(int playerId, int ticks, uint16_t serverPort, do
 	}
 
 	state Reference<IUDPSocket> socket = wait(INetworkConnections::net()->createUDPSocket(false));
-	// 127.0.0.1, not the 0.0.0.0 wildcard the server itself binds to: with
-	// both ends wildcard-bound, loopback replies from picoquic_fanout_server
+	// 127.0.0.1, not the 0.0.0.0 wildcard the server binds to: with both
+	// ends wildcard-bound, loopback replies from picoquic_fanout_server
 	// were never observed arriving back reliably, even though the server
 	// was confirmed listening and receiving. Binding the client to the
-	// specific loopback address - what test_picoquic_fanout.py's proven
-	// aioquic client already does - fixed it.
+	// specific loopback address, as test_picoquic_fanout.py's proven
+	// aioquic client already does, fixed it.
 	socket->bind(NetworkAddress(IPAddress(0x7F000001u), 0, true, false));
 
 	// PICOQUIC_MAX_PACKET_SIZE, not some larger round number: picoquic's own
 	// internal packet buffers (e.g. picoquic_stream_data_node_t::data) are
 	// fixed at exactly this size, so advertising more receive capacity than
 	// that lets an over-length datagram overflow picoquic's internal decrypt
-	// buffer - a real heap-corruption bug found via lldb (crash trapped
-	// inside picoquic_remove_header_protection_inner, called from
+	// buffer. This was a real heap-corruption bug found via lldb (crash
+	// trapped inside picoquic_remove_header_protection_inner, called from
 	// picoquic_incoming_packet, only manifesting once enough connections/
 	// traffic made an over-1536-byte packet likely).
 	state std::array<uint8_t, PICOQUIC_MAX_PACKET_SIZE> recvBuf;
@@ -247,14 +247,14 @@ ACTOR Future<bool> runOnePlayer(int playerId, int ticks, uint16_t serverPort, do
 		choose {
 			// wait(ready(recvF)), not wait(recvF): exceptions are illegal in
 			// this repo's flow actor code, so a recv error must never reach
-			// wait() and throw - ready() (flow/genericactors.actor.h) always
+			// wait() and throw. ready() (flow/genericactors.actor.h) always
 			// resolves once recvF does, success or error, and recvF's own
 			// isError()/getError() are plain non-throwing accessors.
 			when(wait(ready(recvF))) {
 				if (recvF.isError()) {
 					// Windows surfaces an ICMP port-unreachable for a prior
 					// datagram as a connection-reset on this socket's next
-					// recv, even though UDP itself is connectionless -
+					// recv, even though UDP itself is connectionless.
 					// test_picoquic_fanout.py and
 					// picoquic_fanout_server.actor.cpp both already work
 					// around the identical thing on their own sockets.
@@ -322,45 +322,44 @@ ACTOR Future<bool> runOnePlayer(int playerId, int ticks, uint16_t serverPort, do
 	// A graceful close before the worker process exits (runWorker calls
 	// _exit() right after this returns, with no other opportunity to
 	// notify the peer) was tried here and measured to make scaling
-	// noticeably WORSE, not better: round3->4 elapsed-time ratio rose to
-	// 10.7x (vs 4.6x without it), and the ramp failed a full round
-	// earlier. A per-worker blocking close/drain sequence (up to 4
-	// sequential prepare+wait(ready(sendF)) cycles) adds real serial
-	// latency that compounds across every worker in a round as round
-	// size grows - the fix for stale-entity accumulation this was meant
-	// to be cost more than whatever it saved. Left as a plain
-	// picoquic_delete_cnx (no wire-level close attempt) until a
-	// genuinely cheap way to notify the server exists - the server's own
-	// idle timeout already reclaims the entity eventually, just not
-	// promptly.
+	// noticeably worse: round3->4 elapsed-time ratio rose to 10.7x
+	// (vs 4.6x without it), and the ramp failed a full round earlier.
+	// A per-worker blocking close/drain sequence (up to 4 sequential
+	// prepare+wait(ready(sendF)) cycles) adds real serial latency that
+	// compounds across every worker in a round as round size grows: the
+	// intended fix for stale-entity accumulation cost more than it saved.
+	// Left as a plain picoquic_delete_cnx (no wire-level close attempt)
+	// until a genuinely cheap way to notify the server exists. The
+	// server's own idle timeout already reclaims the entity eventually,
+	// just not promptly.
 	picoquic_delete_cnx(cnx);
 	picoquic_free(quic);
 	return succeeded;
 }
 
 // Many simulated players multiplexed through ONE picoquic_quic_t and ONE
-// Flow UDP socket in this ONE process - not many OS processes. This is
+// Flow UDP socket in this ONE process, not many OS processes. This is
 // the design runOnePlayer's own header comment describes as abandoned
 // for being unreliable at high burst counts (all connections sharing one
 // local 4-tuple triggered a storm of Windows ICMP-port-unreachable/
-// connection-reset notifications) - but that diagnosis turned out to be
-// a fixable client-side reliability bug, not a fundamental flaw: binding
+// connection-reset notifications). That diagnosis turned out to be a
+// fixable client-side reliability bug, not a fundamental flaw: binding
 // to 127.0.0.1 instead of the 0.0.0.0 wildcard, and treating
 // connection_failed as routine instead of fatal (both already applied in
 // runOnePlayer above), were enough. It never crashed the process the way
 // sharing multiple independent picoquic_quic_t *contexts* did (3+ in one
-// process corrupts memory in the vendored picoquic/mbedtls stack) -
+// process corrupts memory in the vendored picoquic/mbedtls stack);
 // multiple *connections* in one context was always safe, just unreliable
 // until these fixes landed.
 //
 // This exists because the one-process-per-player design (CockroachDB-
 // style, runOnePlayer/the coordinator) traded the multi-context crash for
-// a different ceiling: this machine's ephemeral UDP port range (49152-
-// 65535, 16384 ports total, shared system-wide) hard-caps how many
+// a different ceiling: this machine's ephemeral UDP port range
+// (49152-65535, 16384 ports total, shared system-wide) hard-caps how many
 // worker processes can each bind their own ephemeral port. That ceiling
 // belongs to the load-generation *methodology*, not to
-// picoquic_fanout_server - measuring the server's own real capacity on
-// this machine means using a load generator that doesn't hit a different
+// picoquic_fanout_server: measuring the server's real capacity on this
+// machine means using a load generator that doesn't hit a different
 // limit first. Many players sharing one socket needs only one ephemeral
 // port for however many are hosted in this process.
 ACTOR Future<int> runManyPlayers(int playerCount, int ticks, uint16_t serverPort, double deadlineSeconds) {
@@ -422,8 +421,8 @@ ACTOR Future<int> runManyPlayers(int playerCount, int ticks, uint16_t serverPort
 	// internal packet buffers (e.g. picoquic_stream_data_node_t::data) are
 	// fixed at exactly this size, so advertising more receive capacity than
 	// that lets an over-length datagram overflow picoquic's internal decrypt
-	// buffer - a real heap-corruption bug found via lldb (crash trapped
-	// inside picoquic_remove_header_protection_inner, called from
+	// buffer. This was a real heap-corruption bug found via lldb (crash
+	// trapped inside picoquic_remove_header_protection_inner, called from
 	// picoquic_incoming_packet, only manifesting once enough connections/
 	// traffic made an over-1536-byte packet likely).
 	state std::array<uint8_t, PICOQUIC_MAX_PACKET_SIZE> recvBuf;
@@ -449,14 +448,14 @@ ACTOR Future<int> runManyPlayers(int playerCount, int ticks, uint16_t serverPort
 		// the "something due now" condition, so checking
 		// picoquic_get_next_wake_delay before draining could see a stale
 		// <=0 result and spin the outer loop with no real wait between
-		// iterations - previously papered over with a delay(0.0)/delay-
+		// iterations. Previously papered over with a delay(0.0)/delay
 		// floor, both of which either leaked (unbounded re-listen on a
 		// still-pending recvF racing an instantly-ready timer) or, once
-		// the wait was removed outright without draining first, busy-
-		// spun with no yield point at all (a fast stack overflow, no
-		// ASan report). Draining first means the only remaining "nothing
-		// to do right now" case is genuinely nothing to do, so a wait is
-		// always warranted afterward.
+		// the wait was removed outright without draining first, busy-spun
+		// with no yield point at all (a fast stack overflow, no ASan
+		// report). Draining first means the only remaining "nothing to do
+		// right now" case is genuinely nothing to do, so a wait is always
+		// warranted afterward.
 		loop {
 			size_t sendLength = 0;
 			sockaddr_storage peerAddr;
@@ -489,7 +488,7 @@ ACTOR Future<int> runManyPlayers(int playerCount, int ticks, uint16_t serverPort
 		int64_t wakeDelayUs = picoquic_get_next_wake_delay(quic, currentTime, 1000000);
 
 		if (wakeDelayUs > 0) {
-			// A real future wake time - race it against recvF exactly
+			// A real future wake time: race it against recvF exactly
 			// once, so recvF gets exactly one live listener at a time.
 			double wakeDelayS = static_cast<double>(wakeDelayUs) / 1e6;
 			choose {
@@ -525,7 +524,7 @@ ACTOR Future<int> runManyPlayers(int playerCount, int ticks, uint16_t serverPort
 		} else {
 			// Drained everything and picoquic still reports nothing due
 			// in the future (e.g. all connections are simply idle,
-			// waiting on the peer) - the only remaining real event source
+			// waiting on the peer). The only remaining real event source
 			// is recvF itself, waited on directly with no fabricated
 			// timer, so this always yields to the reactor instead of
 			// spinning.

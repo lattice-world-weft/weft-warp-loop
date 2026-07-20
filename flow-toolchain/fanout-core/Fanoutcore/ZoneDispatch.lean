@@ -19,12 +19,11 @@ def ZoneWorld.empty (capacity bits : Nat) : ZoneWorld :=
 
 /-- All live zones as a plain, densely-indexed snapshot, alongside the
     `SlotMap` `Id` each array position corresponds to. `authorityForIndex`/
-    `adjacentZones` (Zone.lean) work over plain arrays by design - a
-    static snapshot is enough for one lookup; the `SlotMap` is only needed
-    for the FFI-facing alloc/free identity. Rebuilt on every call rather
-    than cached: simple to reason about and test, and cheap at this
-    project's actual zone counts (a handful per shard) - revisit if that
-    stops being true. -/
+    `adjacentZones` (Zone.lean) work over plain arrays by design: a static
+    snapshot is enough for one lookup, and the `SlotMap` is only needed for
+    the FFI-facing alloc/free identity. Rebuilt on every call rather than
+    cached, for simplicity, and cheap at this project's actual zone counts
+    (a handful per shard); revisit if that stops being true. -/
 def ZoneWorld.liveZones (w : ZoneWorld) : Array (Id × Zone) :=
   w.zones.liveEntries
 
@@ -52,37 +51,36 @@ def ZoneWorld.authorityFor (w : ZoneWorld) (pos : Pos3) : Option Id :=
 
 /-- Every connId that should receive `publisherConnId`'s update at curve
     index `idx`: every other entity's connId in the authority zone for
-    `idx` (blanket visibility among zone-mates - matching
-    `AuthorityInterest.lean`'s own split, authority membership is full
-    mutual visibility, not filtered), plus - in a curve-adjacent zone
-    (`adjacentZones`) - only entities whose k-tick ghost radius
+    `idx` (blanket visibility among zone-mates, matching
+    `AuthorityInterest.lean`'s split — authority membership is full mutual
+    visibility, not filtered), plus, in a curve-adjacent zone
+    (`adjacentZones`), only entities whose k-tick ghost radius
     (`withinGhostRange`, `Zone.lean`) could actually put them in range of
     the publisher within `interestLookahead` ticks. Replaces the earlier
-    "everyone in an adjacent zone is interest, unconditionally" model:
-    an adjacent zone can hold entities that are, in real distance,
-    nowhere near the zone boundary the publisher is close to - Hilbert-
-    curve adjacency is a *candidate* filter (this zone's range is next to
-    mine), ghost range is the *real* interest test on top of it. Entities
-    are tracked per-zone (`Zone.entities`), matching `Room.subscribers`'s
-    existing flat-array shape, rather than in a separate global entity
-    table - a zone's own membership list is exactly what changes on
-    migration (`moveEntity` below).
+    "everyone in an adjacent zone is interest, unconditionally" model: an
+    adjacent zone can hold entities that are, in real distance, nowhere
+    near the zone boundary the publisher is close to. Hilbert-curve
+    adjacency is a *candidate* filter (this zone's range is next to mine);
+    ghost range is the real interest test on top of it. Entities are
+    tracked per-zone (`Zone.entities`), matching `Room.subscribers`'s flat-
+    array shape, rather than in a separate global entity table, since a
+    zone's own membership list is exactly what changes on migration
+    (`moveEntity` below).
 
     No dedup check against `result` here (an earlier version had one,
     `!result.contains connId`): `reach`'s zones are pairwise distinct
     indices (`adjacentZones` never returns `authIdx` itself, and its
     "before"/"after" neighbours are themselves distinct by construction),
-    and `moveEntityToIndex` maintains the invariant that an entity lives
-    in at most one zone at a time (proven:
-    `migrating to a different zone removes the entity from its previous
-    zone` in TestProps.lean) - so no connId can appear in two different
-    zones' `entities` arrays to begin with. The check was a redundant
-    O(result.size) scan on every insertion, making target construction
-    O(reach-population^2) instead of O(reach-population) for no
-    correctness benefit - a real algorithmic cost this repo's own load
-    testing (fanout_load_client) measured directly (super-quadratic
-    growth well past what O(N^2) target construction alone would predict,
-    since this ran once per publisher per tick). -/
+    and `moveEntityToIndex` maintains the invariant that an entity lives in
+    at most one zone at a time (proven in TestProps.lean: "migrating to a
+    different zone removes the entity from its previous zone"), so no
+    connId can appear in two different zones' `entities` arrays to begin
+    with. The check was a redundant O(result.size) scan on every
+    insertion, making target construction O(reach-population^2) instead of
+    O(reach-population) for no correctness benefit — this repo's own load
+    testing (fanout_load_client) measured the cost directly: super-
+    quadratic growth well past what O(N^2) target construction alone would
+    predict, since this ran once per publisher per tick. -/
 def ZoneWorld.targetsForIndex (w : ZoneWorld) (publisherConnId : UInt64) (idx : UInt64) : Array UInt64 := Id.run do
   let live := w.liveZones
   let plain := live.map (·.2)
@@ -102,12 +100,11 @@ def ZoneWorld.targetsForIndex (w : ZoneWorld) (publisherConnId : UInt64) (idx : 
         if rec.connId != publisherConnId then
           result := result.push rec.connId
       -- Interest (adjacent-zone, ghost-range) targets are capped
-      -- separately from authority membership above
-      -- (`interestCapacity` - `AuthorityInterest.lean`'s own budget,
-      -- independent of `authorityCapacity`): once this many interest
-      -- targets have been added to this publish, no further
-      -- adjacent-zone scanning happens, matching that project's own
-      -- authority/interest capacity separation.
+      -- separately from authority membership above (`interestCapacity`,
+      -- `AuthorityInterest.lean`'s own budget, independent of
+      -- `authorityCapacity`): once this many interest targets have been
+      -- added to this publish, no further adjacent-zone scanning happens,
+      -- matching that project's authority/interest capacity separation.
       let mut interestCount := 0
       for j in adjacentZones plain authIdx do
         if interestCount < interestCapacity then
@@ -124,39 +121,38 @@ def ZoneWorld.targetsForIndex (w : ZoneWorld) (publisherConnId : UInt64) (idx : 
 def ZoneWorld.targetsFor (w : ZoneWorld) (publisherConnId : UInt64) (pos : Pos3) : Array UInt64 :=
   w.targetsForIndex publisherConnId (hilbert3D w.bits pos)
 
-/-- Moves (or first-places) `connId`'s entity to curve index `idx` (with
-    `pos` its real position - used for ghost-range checks, which need
-    real micrometre distance, not curve-index distance; defaults to the
-    origin for callers that only care about curve-index placement, e.g.
-    most of TestProps.lean's plain authority/migration/split property
-    tests) with the given velocity magnitude per axis (μm/tick, absolute
-    value - see `EntityRecord`) and lookahead window in ticks (`rttTicks`,
-    sourced from the connection's own measured RTT - `0` means no sample
-    yet and falls back to `defaultLookaheadTicks`): removes it from
-    whichever zone it was previously authoritative in (a linear scan over
-    live zones' entity lists - fine at this scale, matching `Room.unsub`'s
-    own linear `filter`), then adds it to the zone now authoritative for
+/-- Moves (or first-places) `connId`'s entity to curve index `idx`, with
+    `pos` its real position (used for ghost-range checks, which need real
+    micrometre distance, not curve-index distance; defaults to the origin
+    for callers that only care about curve-index placement, e.g. most of
+    TestProps.lean's plain authority/migration/split property tests),
+    velocity magnitude per axis (μm/tick, absolute value, see
+    `EntityRecord`), and lookahead window in ticks (`rttTicks`, sourced
+    from the connection's measured RTT; `0` means no sample yet and falls
+    back to `defaultLookaheadTicks`). Removes the entity from whichever
+    zone it was previously authoritative in (a linear scan over live
+    zones' entity lists, fine at this scale, matching `Room.unsub`'s own
+    linear `filter`), then adds it to the zone now authoritative for
     `idx`, if any, carrying the new position/velocity/RTT forward. This is
     the migration operation (`AuthorityInterest.lean`'s "authority
-    transfer") - a first version with no hysteresis threshold
+    transfer"), a first version with no hysteresis threshold
     (`AuthorityInterest.lean`'s `hysteresisThreshold`), so an entity
     oscillating exactly on a zone boundary can migrate every call; that
-    refinement is later, separate work, not silently assumed solved
-    here.
+    refinement is later, separate work, not silently assumed solved here.
 
     Checks the target zone's `authorityCapacity` headroom *before*
     unsubbing from any previous zone, not after: unsubbing first and only
     then discovering the target zone is full (`Zone.sub` silently no-ops
-    once at capacity) would remove the entity from its previous zone
-    while adding it to nothing, vanishing it from the world entirely -
-    exactly the degenerate single-cell pileup `authorityCapacity` exists
-    to protect against, not a case it's fine to fail open on. If the
-    target has no room and doesn't already hold this entity, the whole
-    move is refused and the entity is left exactly where it was. -/
+    once at capacity) would remove the entity from its previous zone while
+    adding it to nothing, vanishing it from the world entirely — exactly
+    the degenerate single-cell pileup `authorityCapacity` exists to
+    protect against, not a case it's fine to fail open on. If the target
+    has no room and doesn't already hold this entity, the whole move is
+    refused and the entity is left exactly where it was. -/
 def ZoneWorld.moveEntityToIndexV (w : ZoneWorld) (connId idx vx vy vz : UInt64) (rttTicks : UInt64 := 0) (pos : Pos3 := { x := 0, y := 0, z := 0 }) : ZoneWorld := Id.run do
   match w.authorityForIndex idx with
   | none =>
-    -- No zone owns this index (an unassigned gap) - drop the entity from
+    -- No zone owns this index (an unassigned gap): drop the entity from
     -- wherever it was; there is no target zone whose capacity to check.
     let mut zones := w.zones
     for (id, zone) in w.liveZones do
@@ -178,7 +174,7 @@ def ZoneWorld.moveEntityToIndexV (w : ZoneWorld) (connId idx vx vy vz : UInt64) 
         | none => return w
         | some zone' => return { w with zones := zones.update zoneId (zone'.sub { connId, idx, pos, vx, vy, vz, rttTicks }) }
 
-/-- `moveEntityToIndexV` with zero velocity - the convenience entry point
+/-- `moveEntityToIndexV` with zero velocity: the convenience entry point
     for callers that don't track velocity (most of TestProps.lean's plain
     authority/migration/split property tests, which exercise curve-index
     placement logic independent of ghost expansion). -/
@@ -193,31 +189,31 @@ def ZoneWorld.moveEntity (w : ZoneWorld) (connId : UInt64) (pos : Pos3) : ZoneWo
 
 /-- `moveEntityToIndexV`'s hysteresis-gated counterpart
     (`AuthorityInterest.lean`'s `MigrationState`, sized down to a single
-    streak counter - see `EntityRecord.pendingZone`/`migrationStreak`):
-    first placement (the entity has no current zone) transfers
-    immediately, same as `moveEntityToIndexV` - hysteresis only guards
+    streak counter, see `EntityRecord.pendingZone`/`migrationStreak`).
+    First placement (the entity has no current zone) transfers
+    immediately, same as `moveEntityToIndexV`: hysteresis only guards
     *transfer between two zones*, not initial authority assignment, since
-    there is no "old owner" whose stability a first placement could
+    there's no "old owner" whose stability a first placement could
     disrupt. When `idx` still lands in the entity's current zone, its
     record updates in place (fresh pos/velocity/RTT) and the streak resets
-    to 0 - back inside the zone's own range is not "closer to migrating,"
+    to 0: back inside the zone's own range is not "closer to migrating,"
     it's "not migrating." When `idx` lands in a *different* zone: if that
     zone is the same one the entity was already streaking toward, the
     streak increments; if it's a third zone (the entity changed direction
     mid-crossing) or the entity had no streak yet, the streak resets to 1
     for this new candidate. Only once the streak reaches the entity's own
-    `hysteresisTicksFor` threshold - computed fresh from its *current*
+    `hysteresisTicksFor` threshold — computed fresh from its *current*
     `lookaheadTicks` on every call, not a value fixed at first placement
     and never revisited, so a connection's RTT improving or degrading
-    mid-session immediately changes how many ticks its own crossings need
-    to confirm, matching how `withinGhostRange` already always reads the
-    live `lookaheadTicks` rather than a value cached at subscribe time -
-    does authority actually move. Below that, the entity's `idx`/
-    position/velocity still update (so ghost-range checks against it stay
-    accurate even while it's mid-crossing) but it remains simulated by
-    its current zone: absorb boundary jitter without thrashing zone
-    membership, while a genuine, sustained crossing still commits within
-    that many ticks. -/
+    mid-session immediately changes how many ticks its crossings need to
+    confirm, matching how `withinGhostRange` always reads the live
+    `lookaheadTicks` rather than a value cached at subscribe time — does
+    authority actually move. Below that, the entity's idx/position/
+    velocity still update (so ghost-range checks against it stay accurate
+    even while it's mid-crossing) but it remains simulated by its current
+    zone: this absorbs boundary jitter without thrashing zone membership,
+    while a genuine, sustained crossing still commits within that many
+    ticks. -/
 def ZoneWorld.moveEntityToIndexHysteresisV (w : ZoneWorld) (connId idx vx vy vz : UInt64) (rttTicks : UInt64 := 0) (pos : Pos3 := { x := 0, y := 0, z := 0 }) : ZoneWorld := Id.run do
   let mut currentZoneId : Option Id := none
   for (id, zone) in w.liveZones do
@@ -225,8 +221,8 @@ def ZoneWorld.moveEntityToIndexHysteresisV (w : ZoneWorld) (connId idx vx vy vz 
       currentZoneId := some id
   match w.authorityForIndex idx with
   | none =>
-    -- No zone owns this index (e.g. an unassigned gap) - drop the entity
-    -- from wherever it was, matching moveEntityToIndexV's own behaviour.
+    -- No zone owns this index (e.g. an unassigned gap): drop the entity
+    -- from wherever it was, matching moveEntityToIndexV's behaviour.
     match currentZoneId with
     | none => return w
     | some zid =>
@@ -256,7 +252,7 @@ def ZoneWorld.moveEntityToIndexHysteresisV (w : ZoneWorld) (connId idx vx vy vz 
         else
           let streak := if oldRec.pendingZone == some targetZoneId then oldRec.migrationStreak + 1 else 1
           -- Recompute from the *new* rttTicks this call carries, not
-          -- oldRec's - a fresher RTT sample should govern immediately.
+          -- oldRec's: a fresher RTT sample should govern immediately.
           let newRecForLookahead : EntityRecord := { connId, idx, pos, vx, vy, vz, rttTicks }
           let threshold := hysteresisTicksFor newRecForLookahead.lookaheadTicks
           if streak >= threshold then
@@ -264,7 +260,7 @@ def ZoneWorld.moveEntityToIndexHysteresisV (w : ZoneWorld) (connId idx vx vy vz 
             | none => return w
             | some targetZone =>
               if targetZone.entities.size >= authorityCapacity then
-                -- Target zone has no room to commit into right now - stay
+                -- Target zone has no room to commit into right now: stay
                 -- put with the streak preserved (not reset), so a later
                 -- call retries the commit once the target frees up,
                 -- rather than unsubbing from curZone first and finding
@@ -286,8 +282,8 @@ def ZoneWorld.moveEntityToIndexHysteresisV (w : ZoneWorld) (connId idx vx vy vz 
               { connId, idx, pos, vx, vy, vz, rttTicks, pendingZone := some targetZoneId, migrationStreak := streak }
             return { w with zones := w.zones.update curZoneId curZone'' }
 
-/-- Removes `connId`'s entity from whichever zone it was in, if any -
-    mirrors `Room.unsub`, called when a connection disconnects. -/
+/-- Removes `connId`'s entity from whichever zone it was in, if any.
+    Mirrors `Room.unsub`; called when a connection disconnects. -/
 def ZoneWorld.removeEntity (w : ZoneWorld) (connId : UInt64) : ZoneWorld := Id.run do
   let mut zones := w.zones
   for (id, zone) in w.liveZones do
@@ -296,26 +292,26 @@ def ZoneWorld.removeEntity (w : ZoneWorld) (connId : UInt64) : ZoneWorld := Id.r
   return { w with zones := zones }
 
 /-- The population that would land in each of `zone.range`'s 8 octree
-    children if split now, in the same order `octreeChildren` returns them -
-    just a count per child, no entity data moved yet (this is the input
-    `splitIsCheaper` needs before committing to an actual split). -/
+    children if split now, in the same order `octreeChildren` returns
+    them. Just a count per child, no entity data moved yet; this is the
+    input `splitIsCheaper` needs before committing to an actual split. -/
 def childPopulationsFor (zone : Zone) (children : Array ZoneRange) : Array Nat :=
   children.map fun c => (zone.entities.filter fun rec => c.contains rec.idx).size
 
 /-- AV1-style split (ADR 0008/0009, Partition.lean): if splitting `zoneId`
-    into its 8 real octree children (`octreeChildren`, along genuine octant
-    boundaries derived from the Hilbert quantization depth - not an
-    arbitrary midpoint bisection, this project's earlier approximation) is
+    into its 8 real octree children (`octreeChildren`, along genuine
+    octant boundaries derived from the Hilbert quantization depth, not an
+    arbitrary midpoint bisection as this project earlier approximated) is
     cost-favourable (`splitIsCheaper`, this project's own `Θ(population^2)`
-    fanout cost, not the real prior art's ray-tracing surface-area
-    heuristic - see Partition.lean's header comment), frees the original
-    zone and allocates the 8 children, redistributing entities by which
-    child's range contains their own stored curve index. A no-op if
-    `zoneId`'s range isn't a valid octree cell (`octreeChildren` returns
-    `none`) or splitting isn't cost-favourable - split and merge
-    (`maybeMergeSiblings` below) are the same comparison, evaluated from
-    either direction, not two separate mechanisms with independent
-    thresholds to keep in sync. -/
+    fanout cost, not the prior art's ray-tracing surface-area heuristic;
+    see Partition.lean's header comment), frees the original zone and
+    allocates the 8 children, redistributing entities by which child's
+    range contains their stored curve index. A no-op if `zoneId`'s range
+    isn't a valid octree cell (`octreeChildren` returns `none`) or
+    splitting isn't cost-favourable. Split and merge (`maybeMergeSiblings`
+    below) are the same comparison evaluated from either direction, not
+    two separate mechanisms with independent thresholds to keep in
+    sync. -/
 def ZoneWorld.maybeSplitZone (w : ZoneWorld) (zoneId : Id) : ZoneWorld :=
   match w.zones.find zoneId with
   | none => w
@@ -346,8 +342,8 @@ def ZoneWorld.maybeSplitZone (w : ZoneWorld) (zoneId : Id) : ZoneWorld :=
                   | some target => zones := zones.update cid (target.sub rec)
           return { w with zones := zones }
 
-/-- The range one octree level up from `r` (the parent cell `r` would be one
-    of 8 children of), if `r` is itself a valid, non-root octree cell -
+/-- The range one octree level up from `r` (the parent cell `r` would be
+    one of 8 children of), if `r` is itself a valid, non-root octree cell.
     `none` if `r` is already the root (`zoneRangeDepth` gives depth 0) or
     isn't octree-aligned to begin with. -/
 def parentRange (bits : Nat) (r : ZoneRange) : Option ZoneRange := do
@@ -366,7 +362,7 @@ def parentRange (bits : Nat) (r : ZoneRange) : Option ZoneRange := do
     8 children and allocates the single parent zone with their combined
     entities. A no-op if `zoneId`'s range has no valid parent, or fewer
     than all 8 siblings are currently live (a zone can only rejoin its
-    parent when every one of its 7 siblings is also a plain, unsplit leaf -
+    parent when every one of its 7 siblings is also a plain, unsplit leaf;
     partial merges would leave the parent's range partially double-owned),
     or merging isn't cost-favourable. -/
 def ZoneWorld.maybeMergeSiblings (w : ZoneWorld) (zoneId : Id) : ZoneWorld :=
@@ -399,24 +395,23 @@ def ZoneWorld.maybeMergeSiblings (w : ZoneWorld) (zoneId : Id) : ZoneWorld :=
           let childPops := children.map fun c =>
             (allEntities.filter fun rec => c.contains rec.idx).size
           -- Merge iff staying split is *not* the cheaper choice (the
-          -- opposite polarity from maybeSplitZone's own check, by
-          -- construction: `splitIsCheaper` asks "is splitting cheaper
-          -- than merged?", so merging is the right call exactly when
-          -- that answer is no) - a real bug, found and fixed by
-          -- `mergeActuallyMergesWhenCheaperCheck` in TestProps.lean:
-          -- an earlier version used the same `!splitIsCheaper then
-          -- return w else <merge>` shape as maybeSplitZone verbatim,
-          -- which merges when splitting is cheaper and refuses to merge
-          -- when merging is cheaper - inverted from the intent this
-          -- function's own doc comment describes, and never caught
-          -- because the other merge property tests only assert
-          -- invariants *if* a merge happens, vacuously true when one
-          -- never does. Also refuses outright once `totalPop` would
-          -- exceed `authorityCapacity`, even when merging is otherwise
-          -- cheaper - checked before touching any zone, not discovered
-          -- via `Zone.sub` silently dropping the entities that don't
-          -- fit (the same class of vanish bug `moveEntityToIndexV`'s
-          -- own capacity check exists to avoid).
+          -- opposite polarity from maybeSplitZone's check, by
+          -- construction: `splitIsCheaper` asks "is splitting cheaper than
+          -- merged?", so merging is right exactly when that answer is
+          -- no). A real bug, found and fixed by
+          -- `mergeActuallyMergesWhenCheaperCheck` in TestProps.lean: an
+          -- earlier version used the same `!splitIsCheaper then return w
+          -- else <merge>` shape as maybeSplitZone verbatim, which merges
+          -- when splitting is cheaper and refuses to merge when merging
+          -- is cheaper — inverted from the intent this function's doc
+          -- comment describes, and never caught because the other merge
+          -- property tests only assert invariants *if* a merge happens,
+          -- vacuously true when one never does. Also refuses outright
+          -- once `totalPop` would exceed `authorityCapacity`, even when
+          -- merging is otherwise cheaper, checked before touching any
+          -- zone rather than discovered via `Zone.sub` silently dropping
+          -- the entities that don't fit (the same class of vanish bug
+          -- `moveEntityToIndexV`'s capacity check exists to avoid).
           if splitIsCheaper totalPop childPops then return w
           else if totalPop > authorityCapacity then return w
           else

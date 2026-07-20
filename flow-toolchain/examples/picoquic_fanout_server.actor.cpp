@@ -3,8 +3,8 @@
 //
 // A Flow actor that terminates QUIC directly (via vendored picoquic) and
 // relays a text SUB/PUB topic protocol between connections. All fanout
-// logic - which connections are subscribed to which topic, who receives a
-// PUB - lives in the fanout-core Lean4 kernel (fanout-core/); this file owns
+// logic (which connections are subscribed to which topic, who receives a
+// PUB) lives in the fanout-core Lean4 kernel (fanout-core/); this file owns
 // I/O only: the QUIC context, the UDP socket, the wait/timer loop, and the
 // topic-name <-> room-id / connection-id <-> delivery-stream tables that
 // let the Lean core operate on plain integers instead of QUIC objects.
@@ -18,22 +18,22 @@
 //
 // ZPB ("zone publish", ADR 0008/0009) is the Hilbert-curve zone-authority/
 // interest alternative to topic-based SUB/PUB: no topic, no prior
-// subscription - the position IS the routing key. Each ZPB moves the
-// sender's entity to (x, y, z) with velocity (vx, vy, vz) - signed
-// micrometres/tick as sent, `std::abs`'d before crossing the FFI boundary
-// since Fanoutcore.EntityRecord only tracks velocity *magnitude* per axis
+// subscription, the position itself is the routing key. Each ZPB moves the
+// sender's entity to (x, y, z) with velocity (vx, vy, vz), sent as signed
+// micrometres/tick and `std::abs`'d before crossing the FFI boundary since
+// Fanoutcore.EntityRecord only tracks velocity *magnitude* per axis
 // (Fanoutcore/ZoneDispatch.lean's migration: out of whichever zone it was
-// in, into whichever zone is now authoritative for that position, with
-// the entity's RTT-derived lookahead window - `picoquic_get_rtt`,
-// converted to ticks at this FFI boundary, not guessed at with one fixed
-// constant for every connection - carried along for k-tick ghost
-// expansion) and fans the payload out to that zone's authority members
-// plus curve-adjacent interest members whose own ghost radius could
-// actually reach the publisher (`fanout_zone_targets`) - not a flat
-// per-topic broadcast. Zones themselves aren't allocated over the wire
-// yet (no verb for it) - this increment proves the dispatch path end to
-// end against zones a test harness allocates directly via the FFI,
-// wire-level zone provisioning is later, separate work.
+// in, into whichever zone is now authoritative for that position, with the
+// entity's RTT-derived lookahead window carried along for k-tick ghost
+// expansion; the RTT comes from `picoquic_get_rtt`, converted to ticks at
+// this FFI boundary rather than guessed at with one fixed constant for
+// every connection) and fans the payload out to that zone's authority
+// members plus curve-adjacent interest members whose own ghost radius
+// could actually reach the publisher (`fanout_zone_targets`), rather than
+// a flat per-topic broadcast. Zones aren't allocated over the wire yet (no
+// verb for it): this increment proves the dispatch path end to end against
+// zones a test harness allocates directly via the FFI; wire-level zone
+// provisioning is later, separate work.
 
 #include "fanout_core_ffi.h"
 #include "sketch_core_ffi.h"
@@ -74,16 +74,16 @@ uint64_t connIdOf(picoquic_cnx_t* cnx) {
 }
 
 // EntityRecord only tracks velocity *magnitude* per axis (direction plays
-// no role in ghostExpansion) - avoids pulling in <cstdlib>'s overload set
+// no role in ghostExpansion); avoids pulling in <cstdlib>'s overload set
 // just for one int64_t absolute value.
 uint64_t absMagnitude(int64_t v) {
 	return v < 0 ? static_cast<uint64_t>(-v) : static_cast<uint64_t>(v);
 }
 
 // Parses "x y z vx vy vz" (six space-separated signed decimal integers,
-// the ZPB header's payload) via non-throwing std::from_chars - a
+// the ZPB header's payload) via non-throwing std::from_chars, so a
 // malformed header from one connection reports a plain parse failure
-// rather than risking any exception near this codebase's core dispatch
+// instead of risking an exception near this codebase's core dispatch
 // path.
 bool parseZpbFields(const std::string& rest, int64_t& x, int64_t& y, int64_t& z, int64_t& vx, int64_t& vy,
                      int64_t& vz) {
@@ -110,21 +110,20 @@ bool parseZpbFields(const std::string& rest, int64_t& x, int64_t& y, int64_t& z,
 
 // This project's assumed simulation tick length, used only to convert a
 // connection's real measured RTT (picoquic_get_rtt, microseconds) into a
-// tick count for Fanoutcore's k-tick ghost expansion - not a substitute
-// for a per-connection measurement (RTT itself is real and per-
-// connection; this is the unit conversion factor between "microseconds"
-// and "ticks" that measurement needs, the same role Zone.lean's own doc
-// comments describe as "converted to ticks at the FFI boundary by the
-// caller"). No tick rate is configured or measured anywhere else in this
-// codebase yet (fanout_load_client sends all its ZPB ticks back-to-back,
-// unpaced, by design); 50ms/tick (20Hz) is a first, documented assumption
-// - a common game-server simulation rate, not derived from any real
-// measurement here - revisit once an actual configured tick rate exists
-// and read from that instead.
+// tick count for Fanoutcore's k-tick ghost expansion. RTT itself is real
+// and per-connection; this is just the microseconds-to-ticks conversion
+// factor that measurement needs, the role Zone.lean's own doc comments
+// describe as "converted to ticks at the FFI boundary by the caller". No
+// tick rate is configured or measured anywhere else in this codebase yet
+// (fanout_load_client sends all its ZPB ticks back-to-back, unpaced, by
+// design); 50ms/tick (20Hz) is a first documented assumption, a common
+// game-server simulation rate but not derived from any real measurement
+// here. Revisit once an actual configured tick rate exists and read from
+// that instead.
 constexpr uint64_t kSimTickMicros = 50000;
 
 // Real per-connection RTT (picoquic_get_rtt, microseconds), divided by
-// the assumed tick length and rounded up - a crossing observed with a
+// the assumed tick length and rounded up: a crossing observed with a
 // partial tick of RTT still needs a full tick of lookahead, not zero.
 uint64_t rttToTicks(picoquic_cnx_t* cnx) {
 	uint64_t rttMicros = picoquic_get_rtt(cnx);
@@ -160,7 +159,7 @@ constexpr size_t kMaxSketchFrame = 1 << 20;
 // One process = one shard = one fanout-core instance, so this state is a
 // single global, guarded by nothing: picoquic invokes the stream callback
 // from Flow's own reactor thread only, called synchronously out of the
-// bridge actor below - there is no concurrent access to race against.
+// bridge actor below, so there is no concurrent access to race against.
 struct BridgeState {
 	std::unordered_map<std::string, uint64_t> topicToRoom;
 	// conn_id -> (cnx, stream_id) of the stream a connection last SUBed on,
@@ -281,7 +280,7 @@ void handlePub(BridgeState& state, picoquic_cnx_t* cnx, const std::string& topic
 }
 
 // Registers this connection's delivery stream immediately on parsing a
-// ZPB header - mirrors handleSub's own immediate registration - so it can
+// ZPB header, mirroring handleSub's own immediate registration, so it can
 // receive zone-fanout deliveries on this same stream even before its
 // first payload arrives (a ZPB stream has no separate "subscribe" step;
 // the first payload's move is what actually places it into a zone).
@@ -295,8 +294,8 @@ void handleZoneSub(BridgeState& state, picoquic_cnx_t* cnx, uint64_t streamId) {
 // whichever zone is now authoritative there, ghost expansion sized to
 // this entity's own measured latency), then relays payload to that
 // zone's authority members plus curve-adjacent interest members
-// (fanout_zone_targets) - the ADR 0008/0009 rule, not a flat per-topic
-// broadcast.
+// (fanout_zone_targets), per the ADR 0008/0009 rule rather than a flat
+// per-topic broadcast.
 void handleZonePub(BridgeState& state, picoquic_cnx_t* cnx, int64_t x, int64_t y, int64_t z, int64_t vx, int64_t vy,
                     int64_t vz, const uint8_t* payload, size_t payloadLen) {
 	uint64_t connId = connIdOf(cnx);
@@ -411,7 +410,7 @@ void pumpStream(BridgeState& state, picoquic_cnx_t* cnx, uint64_t streamId, Stre
 			              streamState.vz, reinterpret_cast<const uint8_t*>(streamState.buf.data()),
 			              kEntityPacketSize);
 			streamState.buf.erase(0, kEntityPacketSize);
-			// One ZPB payload per header, matching PUB - a fresh
+			// One ZPB payload per header, matching PUB: a fresh
 			// "ZPB x y z vx vy vz\n" header precedes each tick's payload,
 			// since position and velocity both move between ticks.
 			streamState.headerParsed = false;
@@ -474,12 +473,12 @@ ACTOR Future<Void> fanoutServer(uint16_t port, std::string certPath, std::string
 	resetSeed.fill(0x42);
 
 	// 64 (picoquic's own common default) was a real, unintentional ceiling
-	// found while load-testing this server with fanout_load_client - not
-	// yet actually hit (that testing found a lower, client/OS-side ceiling
-	// first: see flow-toolchain/examples/fanout_load_client.actor.cpp's
+	// found while load-testing this server with fanout_load_client. Not
+	// yet actually hit, since that testing found a lower, client/OS-side
+	// ceiling first (see flow-toolchain/examples/fanout_load_client.actor.cpp's
 	// header comment), but worth removing proactively so it isn't the
 	// next one found. 2048 is comfortably above any near-term target
-	// without committing to a specific fabric-scale number - that number
+	// without committing to a specific fabric-scale number: that number
 	// depends on the still-unstarted Hilbert-curve interest/authority
 	// redesign (docs/decisions/0008-fiedler-scale-constants-and-fabric-interest-authority.md),
 	// not on this single-shard server's own raw connection handling.
@@ -508,7 +507,7 @@ ACTOR Future<Void> fanoutServer(uint16_t port, std::string certPath, std::string
 	// PICOQUIC_MAX_PACKET_SIZE (picoquic.h), not a round number larger than
 	// it: picoquic's own internal packet buffers are fixed at exactly this
 	// size, so a larger receive capacity here lets an over-length datagram
-	// overflow picoquic's internal decrypt buffer - a real heap-corruption
+	// overflow picoquic's internal decrypt buffer. Real heap-corruption
 	// bug found (via fanout_load_client's --multi mode, which shares this
 	// same buffer sizing) with lldb, trapped inside
 	// picoquic_remove_header_protection_inner.
@@ -530,7 +529,7 @@ ACTOR Future<Void> fanoutServer(uint16_t port, std::string certPath, std::string
 		choose {
 			// wait(ready(recvF)), not wait(recvF): exceptions are illegal in
 			// this repo's flow actor code, so a recv error must never reach
-			// wait() and throw - ready() (flow/genericactors.actor.h) always
+			// wait() and throw. ready() (flow/genericactors.actor.h) always
 			// resolves once recvF does, success or error, and recvF's own
 			// isError()/getError() are plain non-throwing accessors. Before
 			// this guard, an uncaught Windows connection-reset here (see
@@ -544,10 +543,10 @@ ACTOR Future<Void> fanoutServer(uint16_t port, std::string certPath, std::string
 					// outbound datagram (e.g. this server's own reply racing
 					// a client that already gave up and closed its ephemeral
 					// port) as a connection-reset on this socket's next
-					// recv, even though UDP itself is connectionless -
+					// recv, even though UDP itself is connectionless.
 					// test_picoquic_fanout.py already works around the
 					// identical quirk on the client side. Log and keep
-					// receiving regardless of the specific error - this recv
+					// receiving regardless of the specific error: this recv
 					// loop must never die from a transient socket error.
 					TraceEvent(SevWarn, "FanoutRecvError").error(recvF.getError());
 					recvF = socket->receiveFrom(recvBuf.data(), recvBuf.data() + recvBuf.size(), &sender);
@@ -555,7 +554,7 @@ ACTOR Future<Void> fanoutServer(uint16_t port, std::string certPath, std::string
 					// Defensive: this socket is v4-only, but macOS has been seen
 					// delivering a v6-form sender; toV4() on it would throw
 					// bad_variant_access and kill this loop actor. Drop the
-					// datagram instead - QUIC retransmission recovers it.
+					// datagram instead; QUIC retransmission recovers it.
 					TraceEvent(SevWarnAlways, "FanoutV6SenderSkipped").detail("From", sender);
 					recvF = socket->receiveFrom(recvBuf.data(), recvBuf.data() + recvBuf.size(), &sender);
 				} else {

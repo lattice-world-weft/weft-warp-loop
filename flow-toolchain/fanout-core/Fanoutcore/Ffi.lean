@@ -54,7 +54,7 @@ def pubTargets (roomId : UInt64) (publisherConnId : UInt64) : IO (Array UInt64) 
   | some room => return room.targets publisherConnId
 
 -- ── Zone-authority / interest dispatch (ADR 0008, Zone.lean/ZoneDispatch.lean) ──
--- Additive to the Room/SUB/PUB API above, not yet called from it - the
+-- Additive to the Room/SUB/PUB API above, not yet called from it: the
 -- C++ host's wire protocol still only speaks flat Room broadcast. These
 -- exports let a future wire verb (e.g. a position-carrying "MOVE") drive
 -- zone-based authority/interest fanout once that dispatch rewiring lands.
@@ -74,7 +74,7 @@ def zoneFree (zoneId : UInt64) : IO Unit := do
   stateRef.set { s with zoneWorld := s.zoneWorld.freeZone (Id.unpack zoneId) }
 
 /-- Splits/merges the zone `pos` now lands in after a move, cost-decided
-    (`Partition.lean`'s `splitIsCheaper`) - checked on every move rather
+    (`Partition.lean`'s `splitIsCheaper`). Checked on every move rather
     than a separate timer/tick, since population changes exactly when
     entities move. Shared by both `entityMove` (zero velocity) and
     `entityMoveV` (real velocity) so the split-check logic has one
@@ -92,9 +92,9 @@ def entityMove (connId : UInt64) (x : Int64) (y : Int64) (z : Int64) : IO Unit :
   stateRef.set { s with zoneWorld := rebalanceAfterMove moved pos }
 
 /-- `entityMove` with a known velocity magnitude per axis (μm/tick,
-    absolute value - `EntityRecord`) and RTT-derived lookahead window in
-    ticks (`rttTicks` - `0` means no RTT sample yet, falls back to
-    `defaultLookaheadTicks`; the caller converts picoquic's own measured
+    absolute value, see `EntityRecord`) and RTT-derived lookahead window in
+    ticks (`rttTicks`; `0` means no RTT sample yet, falls back to
+    `defaultLookaheadTicks`; the caller converts picoquic's measured
     RTT to a tick count before calling, keeping this module's arithmetic
     in one unit system), for k-tick ghost expansion once a caller (the
     wire protocol, later work) actually sends both. `entityMove` above
@@ -111,7 +111,7 @@ def entityMoveV (connId : UInt64) (x : Int64) (y : Int64) (z : Int64) (vx vy vz 
 def entityRemove (connId : UInt64) : IO Unit := do
   let s ← stateRef.get
   -- Find the zone this entity is leaving *before* removing it, so a merge
-  -- (the symmetric counterpart to the split check in entityMove - a
+  -- (the symmetric counterpart to the split check in entityMove: a
   -- population drop is exactly when merging back into a sibling's parent
   -- could become cost-favourable) has a zone to check. Its id is still
   -- valid after `removeEntity` (that only edits entity membership, never
@@ -127,7 +127,7 @@ def entityRemove (connId : UInt64) : IO Unit := do
 /-- Returns the zone-authority/interest fanout target list (ZoneDispatch's
     `targetsFor`: the authority zone plus curve-adjacent interest zones)
     for a publish from `publisherConnId` at `(x, y, z)`. Empty array if no
-    zone's range covers that position - a legitimate state (gossip hasn't
+    zone's range covers that position: a legitimate state (gossip hasn't
     assigned that range yet), not an error. -/
 @[export fanout_zone_targets]
 def zoneTargets (publisherConnId : UInt64) (x : Int64) (y : Int64) (z : Int64) : IO (Array UInt64) := do

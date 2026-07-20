@@ -5,7 +5,7 @@
 -- trivially-correct model (a flat list of live (id, value) pairs); after
 -- every step the two must agree on `find` for every id ever observed. On
 -- top of that, allocation freshness (a returned id never equals any id
--- returned before - the generational guarantee) and full-capacity behavior
+-- returned before, the generational guarantee) and full-capacity behavior
 -- are asserted inline, and Room's fanout algebra is checked directly.
 import Fanoutcore.FanoutCore
 import Fanoutcore.Zone
@@ -59,7 +59,7 @@ def step (cap : Nat) (s : Sim) (op : Nat × Nat × Nat) : Sim :=
         | none =>
           -- alloc may only fail when every slot is live.
           { s with ok := s.ok && (s.model.length == cap) }
-      | 1 => -- free an observed id (live, stale, or garbage - all must be safe)
+      | 1 => -- free an observed id (live, stale, or garbage: all must be safe)
         match s.observed[a % (s.observed.length.max 1)]? with
         | some id =>
           { s with map := s.map.free id
@@ -92,8 +92,8 @@ def roomFrom (l : List Nat) : Room :=
 
 /-- Exhaustively checks `hilbertIndexOfGrid bits` is a bijection from the
     `2^bits`-per-axis grid onto `[0, 2^(3*bits))`: every grid cell maps to
-    a distinct index, and every index in range is hit by some cell. Real
-    coverage, not a sample - Skilling's algorithm is well-known, but this
+    a distinct index, and every index in range is hit by some cell. Full
+    coverage, not a sample: Skilling's algorithm is well-known, but this
     verifies *this* Lean4 transcription of it rather than trusting memory.
     `bits = 3` keeps this small (512 cells) while still exercising every
     branch of the bit-level loop at least twice. -/
@@ -114,7 +114,7 @@ def hilbertIsBijective (bits : Nat) : Bool := Id.run do
   return seen.all id -- surjective: every index in range was hit
 
 /-- Builds disjoint, contiguous zone ranges by prefix-summing a list of
-    lengths (each clamped to at least 1 so no range is empty) - disjoint by
+    lengths (each clamped to at least 1 so no range is empty). Disjoint by
     construction, so `authorityForIndex`/`disjointRanges` are tested
     against inputs guaranteed to satisfy their precondition rather than
     relying on independently-random ranges happening not to overlap. -/
@@ -134,7 +134,7 @@ def idxFromSeed (lens : List Nat) (seed : Nat) : UInt64 :=
   else 0
 
 /-- True iff `authorityForIndex`, given disjoint zones built from `lens`,
-    finds a zone whose range actually contains the picked index - vacuously
+    finds a zone whose range actually contains the picked index. Vacuously
     true for the degenerate empty-`lens` case. -/
 def authorityContainsCheck (lens : List Nat) (seed : Nat) : Bool :=
   let zones := zonesFromLengths lens
@@ -157,7 +157,7 @@ def authorityUniqueCheck (lens : List Nat) (seed : Nat) : Bool :=
     | some i => ((List.range zones.size).filter fun j => (zones[j]!).range.contains idx) == [i]
 
 /-- True iff `adjacentZones`, given zones built from `lens`, never includes
-    the zone whose neighbours were asked for - vacuously true when `lens`
+    the zone whose neighbours were asked for. Vacuously true when `lens`
     is empty. -/
 def adjacentExcludesSelfCheck (lens : List Nat) (seed : Nat) : Bool :=
   let zones := zonesFromLengths lens
@@ -182,15 +182,15 @@ def zoneWorldFromLengths (bits : Nat) (lens : List Nat) : ZoneWorld := Id.run do
   return w
 
 /-- The total curve span covered by `w`'s live zones (the largest `stop`
-    among them, or 0 if `w` has no zones) - used to fold an arbitrary test
+    among them, or 0 if `w` has no zones). Used to fold an arbitrary test
     seed into a curve index guaranteed to land inside *some* zone, the
     same way `idxFromSeed` does for the plain-array zone tests above. -/
 def Fanoutcore.ZoneWorld.totalSpan (w : ZoneWorld) : UInt64 :=
   (w.liveZones.map fun (_, z) => z.range.stop).foldl max 0
 
 /-- True iff, after moving `connId` to `idx`, that zone's authority query
-    for `idx` reports a zone whose live entities include `connId` -
-    vacuously true when `lens` is empty (no zone can own anything). -/
+    for `idx` reports a zone whose live entities include `connId`.
+    Vacuously true when `lens` is empty (no zone can own anything). -/
 def moveThenAuthorityContainsCheck (lens : List Nat) (connId idx : Nat) : Bool :=
   let w := zoneWorldFromLengths 8 lens
   if w.liveZones.size == 0 then true
@@ -205,7 +205,7 @@ def moveThenAuthorityContainsCheck (lens : List Nat) (connId idx : Nat) : Bool :
       | some zone => zone.entities.any (·.connId == connId.toUInt64)
 
 /-- True iff moving an entity to a *different* zone removes it from its
-    previous zone's membership - vacuously true if either index has no
+    previous zone's membership. Vacuously true if either index has no
     authority zone, or both land in the same zone (nothing to migrate). -/
 def migrationLeavesOldZoneCheck (lens : List Nat) (connId idxA idxB : Nat) : Bool :=
   let w := zoneWorldFromLengths 8 lens
@@ -221,8 +221,8 @@ def migrationLeavesOldZoneCheck (lens : List Nat) (connId idxA idxB : Nat) : Boo
   | _, _ => true
 
 /-- True iff `moveEntityToIndexHysteresisV`'s first placement (no prior
-    zone) lands the entity immediately, same as the non-hysteresis path -
-    vacuously true when `lens` is empty. -/
+    zone) lands the entity immediately, same as the non-hysteresis path.
+    Vacuously true when `lens` is empty. -/
 def hysteresisFirstPlacementImmediateCheck (lens : List Nat) (connId idx : Nat) : Bool :=
   let w := zoneWorldFromLengths 8 lens
   if w.liveZones.size == 0 then true
@@ -239,10 +239,10 @@ def hysteresisFirstPlacementImmediateCheck (lens : List Nat) (connId idx : Nat) 
 /-- True iff a sustained crossing toward a *different* zone stays with its
     current zone for every call short of `hysteresisTicksFor
     defaultLookaheadTicks`, then actually commits on the call that reaches
-    it - the real behaviour the mechanism exists for: a genuine, sustained
-    crossing still transfers authority within a bounded number of ticks,
-    not never. Vacuously true if either index has no authority zone, or
-    both land in the same zone (nothing to migrate). -/
+    it: the behaviour the mechanism exists for, a genuine sustained
+    crossing still transfers authority within a bounded number of ticks.
+    Vacuously true if either index has no authority zone, or both land in
+    the same zone (nothing to migrate). -/
 def hysteresisCommitsAfterStreakCheck (lens : List Nat) (connId idxA idxB : Nat) : Bool :=
   let w := zoneWorldFromLengths 8 lens
   let boundedA := idxA.toUInt64 % (max w.totalSpan 1)
@@ -268,8 +268,8 @@ def hysteresisCommitsAfterStreakCheck (lens : List Nat) (connId idxA idxB : Nat)
   | _, _ => true
 
 /-- True iff an entity whose evaluated index keeps alternating between its
-    own current zone and a neighbour - boundary jitter, never a sustained
-    crossing - never migrates, no matter how many rounds of alternation:
+    own current zone and a neighbour (boundary jitter, never a sustained
+    crossing) never migrates, no matter how many rounds of alternation:
     every return to the current zone resets the streak to 0, so the
     streak toward the neighbour never accumulates past 1. Vacuously true
     if either index has no authority zone, or both land in the same zone. -/
@@ -294,8 +294,8 @@ def hysteresisAbsorbsOscillationCheck (lens : List Nat) (connId idxA idxB rounds
 
 /-- True iff a single zone's live authority membership never exceeds
     `authorityCapacity`, even when far more entities than that keep
-    trying to join the *same* single-point cell (a range of length 1 -
-    `octreeMaxDepth`, nowhere further to split into, the exact degenerate
+    trying to join the *same* single-point cell (a range of length 1,
+    `octreeMaxDepth`, nowhere further to split into: the exact degenerate
     case `authorityCapacity` exists for). `n` is bounded (`% 500`, well
     past `authorityCapacity`'s value) to keep the check fast while still
     exercising the cap. -/
@@ -314,10 +314,10 @@ def authorityCapacityCheck (n : Nat) : Bool :=
     range targets) never exceeds `interestCapacity`, even when every
     candidate entity in the adjacent zone genuinely passes the ghost-range
     check (all default zero position/velocity, so `withinGhostRange` is
-    trivially true for all of them - the real filtering isn't what's
-    supposed to bound this, the cap is). Two adjacent unit zones: the
-    publisher alone in the authority zone at index 0, `n` (bounded, well
-    past `interestCapacity`) entities in the neighbouring zone at index 1. -/
+    trivially true for all of them: the filtering isn't what's supposed to
+    bound this, the cap is). Two adjacent unit zones: the publisher alone
+    in the authority zone at index 0, `n` (bounded, well past
+    `interestCapacity`) entities in the neighbouring zone at index 1. -/
 def interestCapacityCheck (n : Nat) : Bool :=
   let n := n % 600
   let w := ZoneWorld.empty (n + 8) 21
@@ -331,17 +331,16 @@ def interestCapacityCheck (n : Nat) : Bool :=
       let wf := (List.range n).foldl (fun acc i => acc.moveEntityToIndex (i + 1).toUInt64 1) w3
       (wf.targetsForIndex 0 0).size <= interestCapacity
 
-/-- Regression guard for a real bug found by re-checking this session's
-    own work: `moveEntityToIndexV` used to unsub an entity from its
+/-- Regression guard: `moveEntityToIndexV` used to unsub an entity from its
     previous zone unconditionally, *before* checking whether the target
-    zone had room - if the target was already at `authorityCapacity`,
+    zone had room. If the target was already at `authorityCapacity`,
     `Zone.sub` would silently refuse it there too, vanishing the entity
     from every zone in the world with no authority home at all. True iff
     an entity sitting in zone A, attempting to migrate into a zone B
     that's already full, is still findable in *some* live zone afterward
     (fixed: the move is refused outright, leaving the entity in zone A
     untouched, rather than removed from A and rejected by B). `seed` is
-    unused - this scenario is fully deterministic - kept only so this
+    unused, since this scenario is fully deterministic; kept only so this
     runs as a Plausible check like its neighbours. -/
 def capacityFullMigrationPreservesEntityCheck (seed : Nat) : Bool :=
   let _ := seed
@@ -362,7 +361,7 @@ def capacityFullMigrationPreservesEntityCheck (seed : Nat) : Bool :=
     `authorityCapacity`, then drives an entity in zone A toward B for
     enough consecutive ticks to reach a commit (`hysteresisTicksFor`
     ticks, well within a generous fixed bound), and checks it's still
-    findable somewhere afterward - the commit branch had the identical
+    findable somewhere afterward. The commit branch had the identical
     unsub-before-capacity-check bug, fixed by staying in the current zone
     with the streak preserved when the target has no room. -/
 def hysteresisCapacityFullMigrationPreservesEntityCheck (seed : Nat) : Bool :=
@@ -398,7 +397,7 @@ def sameZoneTargetsEachOtherCheck (lens : List Nat) (connA connB idx : Nat) : Bo
     let w2 := w1.moveEntityToIndex connB.toUInt64 boundedIdx
     (w2.targetsForIndex connA.toUInt64 boundedIdx).contains connB.toUInt64
 
-/-- True iff `targetsForIndex` never returns duplicate connIds - the
+/-- True iff `targetsForIndex` never returns duplicate connIds. The
     regression guard for dropping targetsForIndex's redundant dedup check
     (an entity can only ever be in one zone at a time, so it can only
     ever appear once across the authority + curve-adjacent zones a
@@ -427,18 +426,19 @@ def removeEntityCheck (lens : List Nat) (connId idx : Nat) : Bool :=
   w2.liveZones.all fun (_, z) => !z.entities.any (·.connId == connId.toUInt64)
 
 /-- `8^d` as a `UInt64`, computed as `1 <<< (3*d)` (`UInt64` has no `HPow
-    UInt64 UInt64` instance) - `8^d = 2^(3d)`, matching `octreeMaxDepth`'s
-    own "3 bits per octree level" accounting. -/
+    UInt64 UInt64` instance): `8^d = 2^(3d)`, matching `octreeMaxDepth`'s
+    "3 bits per octree level" accounting. -/
 def pow8 (d : Nat) : UInt64 := (1 : UInt64) <<< (3 * d).toUInt64
 
 /-- Builds a `ZoneWorld` whose one zone spans the *entire* Hilbert range at
-    quantization depth `depth` (`[0, 8^depth)`, always a valid octree cell at
-    depth 0 - the root - regardless of `depth`'s value, so `octreeChildren`
-    always succeeds on it as long as `depth >= 1`), places each of `conns` at
-    index `idx % 8^depth`. `depth` is bounded to `1..3` (keeps `8^depth` -
-    at most 512 - small enough for exhaustive entity placement in a
-    property test while still giving `maybeSplitZone`/`maybeMergeSiblings`
-    real octree structure to work with, unlike a degenerate 1-cell world). -/
+    quantization depth `depth` (`[0, 8^depth)`, always a valid octree cell
+    at depth 0, the root, regardless of `depth`'s value, so
+    `octreeChildren` always succeeds on it as long as `depth >= 1`), places
+    each of `conns` at index `idx % 8^depth`. `depth` is bounded to `1..3`
+    (keeps `8^depth`, at most 512, small enough for exhaustive entity
+    placement in a property test while still giving `maybeSplitZone`/
+    `maybeMergeSiblings` real octree structure to work with, unlike a
+    degenerate 1-cell world). -/
 def splitSetup (depth : Nat) (conns idxs : List Nat) : Option (ZoneWorld × Id) :=
   let d := depth % 3 + 1
   let span : UInt64 := pow8 d
@@ -453,7 +453,7 @@ def splitSetup (depth : Nat) (conns idxs : List Nat) : Option (ZoneWorld × Id) 
     some (w', zoneId)
 
 /-- True iff `maybeSplitZone` preserves the total live entity count across
-    the resulting zones - no entity lost or duplicated among the 8
+    the resulting zones: no entity lost or duplicated among the 8
     children. Vacuously true when the setup can't produce a zone, or when
     splitting isn't cost-favourable for this particular entity
     distribution (a no-op, which trivially preserves the count too). -/
@@ -470,9 +470,9 @@ def splitPreservesEntityCountCheck (depth : Nat) (conns idxs : List Nat) : Bool 
       before == after
 
 /-- True iff, after a split, every entity lands in a live zone whose
-    range actually contains that entity's own stored curve index - the
-    correctness property the whole split exists for (an entity must stay
-    discoverable via `authorityForIndex` at its own position, not
+    range actually contains that entity's own stored curve index. This is
+    the correctness property the whole split exists for (an entity must
+    stay discoverable via `authorityForIndex` at its own position, not
     silently misfiled into the wrong octant by the split). -/
 def splitPlacesEntitiesCorrectlyCheck (depth : Nat) (conns idxs : List Nat) : Bool :=
   match splitSetup depth conns idxs with
@@ -482,7 +482,7 @@ def splitPlacesEntitiesCorrectlyCheck (depth : Nat) (conns idxs : List Nat) : Bo
     w'.liveZones.all fun (_, z) =>
       z.entities.all fun rec => z.range.contains rec.idx
 
-/-- True iff live zone ranges stay pairwise disjoint after a split -
+/-- True iff live zone ranges stay pairwise disjoint after a split.
     `maybeSplitZone` must not silently create overlapping authority. -/
 def splitKeepsRangesDisjointCheck (depth : Nat) (conns idxs : List Nat) : Bool :=
   match splitSetup depth conns idxs with
@@ -491,13 +491,12 @@ def splitKeepsRangesDisjointCheck (depth : Nat) (conns idxs : List Nat) : Bool :
     let w' := w.maybeSplitZone zoneId
     disjointRanges (w'.liveZones.map fun (_, z) => z.range)
 
-/-- True iff a zone holding at most one entity is never split -
+/-- True iff a zone holding at most one entity is never split.
     `leafCost 1 = 1` while any real split costs at least `zoneOverhead * 8`
     (Partition.lean), so splitting a near-empty zone can never be
-    cost-favourable; this is the cost model actually doing something
-    sensible, not splitting unconditionally the way the old threshold-only
-    mechanism could be made to (`maybeSplitZone zoneId 0` in the previous
-    version always split any non-empty zone). -/
+    cost-favourable. This shows the cost model doing something sensible,
+    unlike the old threshold-only mechanism (`maybeSplitZone zoneId 0` in
+    the previous version always split any non-empty zone unconditionally). -/
 def splitNeedsEnoughPopulationCheck (depth : Nat) (conn : Nat) : Bool :=
   match splitSetup depth [conn] [0] with
   | none => true
@@ -507,17 +506,17 @@ def splitNeedsEnoughPopulationCheck (depth : Nat) (conn : Nat) : Bool :=
 
 /-- Builds a `ZoneWorld` whose root (depth `d := depth % 3 + 1`, span
     `[0, 8^d)`) has already been split into its 8 real octree children
-    (mirroring `splitSetup`, but one level down - the setup
+    (mirroring `splitSetup`, but one level down, the setup
     `maybeMergeSiblings` needs, since it only ever considers merging 8
     already-live sibling leaves back into their shared parent). Split
     directly via `octreeChildren`/`allocZone` rather than
     `maybeSplitZone`, since a lone empty root never meets
-    `splitIsCheaper` (see `splitNeedsEnoughPopulationCheck`) - this
+    `splitIsCheaper` (see `splitNeedsEnoughPopulationCheck`); this
     fixture needs 8 live children unconditionally, independent of the
-    cost model's own opinion on an empty root. Entities are placed
-    *after* the split, directly into the children via
-    `moveEntityToIndex`, so each lands in whichever of the 8 real octants
-    its index falls in - not artificially pre-sorted. -/
+    cost model's opinion on an empty root. Entities are placed *after*
+    the split, directly into the children via `moveEntityToIndex`, so
+    each lands in whichever of the 8 real octants its index falls in,
+    not artificially pre-sorted. -/
 def mergeSetup (depth : Nat) (conns idxs : List Nat) : Option ZoneWorld := do
   let d := depth % 3 + 1
   let span : UInt64 := pow8 d
@@ -537,7 +536,7 @@ def mergeSetup (depth : Nat) (conns idxs : List Nat) : Option ZoneWorld := do
   some w'
 
 /-- True iff, after `maybeMergeSiblings` on one of the 8 children,
-    the total live entity count is preserved - no entity lost or
+    the total live entity count is preserved: no entity lost or
     duplicated when 8 siblings recombine into their parent. Vacuously
     true when the setup can't produce a zone, or merging isn't
     cost-favourable (a no-op). -/
@@ -565,15 +564,15 @@ def mergeKeepsRangesDisjointCheck (depth : Nat) (conns idxs : List Nat) : Bool :
       disjointRanges (w'.liveZones.map fun (_, z) => z.range)
 
 /-- True iff `maybeMergeSiblings` actually performs a merge when merging
-    is genuinely cost-favourable - a real gap the two checks above never
-    caught: they only assert invariants *if* a merge happens, vacuously
-    satisfied when no merge happens at all, so they never proved a merge
-    ever actually fires. One entity spread across 8 otherwise-empty
+    is genuinely cost-favourable. This closes a gap the two checks above
+    never caught: they only assert invariants *if* a merge happens,
+    vacuously satisfied when no merge happens at all, so they never proved
+    a merge actually fires. One entity spread across 8 otherwise-empty
     siblings (`mergeSetup depth [conn] [0]`) is unambiguous: leafCost 1 =
     1 is strictly less than the 8-way splitCost (`leafCost 1 + zoneOverhead
     = 2` for the one occupied child, `leafCost 0 + zoneOverhead = 1` each
-    for the other 7 - 9 total), so merging must be the cheaper choice and
-    a real merge (8 live zones down to 1) must happen. -/
+    for the other 7, 9 total), so merging must be the cheaper choice and a
+    real merge (8 live zones down to 1) must happen. -/
 def mergeActuallyMergesWhenCheaperCheck (depth : Nat) (conn : Nat) : Bool :=
   match mergeSetup depth [conn] [0] with
   | none => true
@@ -585,14 +584,13 @@ def mergeActuallyMergesWhenCheaperCheck (depth : Nat) (conn : Nat) : Bool :=
       w'.liveZones.size < w.liveZones.size
 
 /-- True iff `withinGhostRange` is symmetric in its two entities: whether
-    A could reach B doesn't depend on which one is labelled "publisher" -
+    A could reach B doesn't depend on which one is labelled "publisher."
     `axisDist` is itself symmetric and each side's ghost expansion is
     added (not subtracted or otherwise order-sensitive), so swapping the
-    two entities' roles must give the same answer. A real, testable
-    consequence of the fix (comparing real per-axis micrometre distance,
-    not curve-index distance) - the pure function is simple enough to
-    check this directly rather than only through a full ZoneWorld
-    scenario. -/
+    two entities' roles must give the same answer. A testable consequence
+    of the fix (comparing real per-axis micrometre distance, not curve-
+    index distance); the pure function is simple enough to check this
+    directly rather than only through a full ZoneWorld scenario. -/
 def withinGhostRangeSymmetricCheck
     (px py pz pvx pvy pvz pk tx ty tz tvx tvy tvz tk : Nat) : Bool :=
   let p : Pos3 := { x := Int64.ofNat px, y := Int64.ofNat py, z := Int64.ofNat pz }
@@ -602,15 +600,15 @@ def withinGhostRangeSymmetricCheck
 
 /-- True iff, with both entities stationary (zero velocity on every
     axis), `withinGhostRange` is true iff the two positions are exactly
-    equal - zero velocity means zero ghost expansion (`ghostExpansion v _
+    equal. Zero velocity means zero ghost expansion (`ghostExpansion v _
     _ = 0` when `v = 0`), so the only way a zero-radius entity is "in
     range" of another zero-radius entity is if they're already at the
     same point. This is the property the earlier curve-index-distance
     bug violated in spirit (everything effectively had zero *curve-index*
     radius at realistic velocities, but was tested as if position
-    equality was never actually required) - now it's true by construction
-    for the degenerate all-zero case, and real (nonzero) cases are
-    covered by the monotonicity check below. -/
+    equality was never actually required); now it's true by construction
+    for the degenerate all-zero case, and nonzero cases are covered by the
+    monotonicity check below. -/
 def withinGhostRangeZeroVelocityCheck (px py pz tx ty tz k : Nat) : Bool :=
   let p : Pos3 := { x := Int64.ofNat px, y := Int64.ofNat py, z := Int64.ofNat pz }
   let t : Pos3 := { x := Int64.ofNat tx, y := Int64.ofNat ty, z := Int64.ofNat tz }
@@ -619,12 +617,11 @@ def withinGhostRangeZeroVelocityCheck (px py pz tx ty tz k : Nat) : Bool :=
 
 /-- True iff increasing one entity's velocity on every axis (holding
     everything else fixed) never turns an in-range determination into
-    out-of-range - `ghostExpansion` is monotone non-decreasing in `v`
+    out-of-range. `ghostExpansion` is monotone non-decreasing in `v`
     (`v*k + aHalf*k^2`, `aHalf = 0` here), so a larger radius can only
     keep covering (or newly cover) the same fixed distance, never stop
-    covering it. Directly exercises "more velocity means more reach,"
-    the real-world property the whole ghost-expansion mechanism exists
-    to provide. -/
+    covering it. Directly exercises "more velocity means more reach," the
+    property the whole ghost-expansion mechanism exists to provide. -/
 def withinGhostRangeMonotoneInVelocityCheck
     (px py pz pvx pvy pvz pk tx ty tz tvx tvy tvz tk extra : Nat) : Bool :=
   let p : Pos3 := { x := Int64.ofNat px, y := Int64.ofNat py, z := Int64.ofNat pz }

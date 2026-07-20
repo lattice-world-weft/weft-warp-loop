@@ -1,85 +1,17 @@
-## Determinism architecture: GDScript authoring on the godot-sandbox VM, taskweft as a compiled front-end
+## Determinism architecture: godot-sandbox vs. this repo's s7/shrubbery stack
 
-The four things named are not interchangeable, and conflating them is the
-actual risk:
-
-- **Native GDScript** (Godot's built-in `.gd` interpreter, shipped in
-  every Godot binary) — dynamically typed, runs as trusted engine code,
-  full Node/signal/engine access. No documented bit-identical-replay
-  contract across hosts (host-native double float, hash-order-sensitive
-  `Dictionary`, no fuel/instruction accounting). Fine for client-only
-  rendering/UI, wrong for anything that must replay identically across
-  peers.
-- **Godot C++ modules / GDExtension** — fully native, compiled directly
-  against the engine, zero sandbox. Same trust tier as native GDScript,
-  just faster and unsafe in a different way (memory safety, not
-  determinism). Also wrong for the replicated-simulation path.
-- **The Variant API** — Godot's tagged-union value type (`int`, `float`,
-  `String`, `Vector2`, `Array`, `Dictionary`, `Object`, …). This is not an
-  execution model at all — it's the *data contract* every one of the
-  other three marshals values through when crossing an engine/script/
-  extension boundary. Determinism claims have to be scoped against this
-  boundary specifically, since it's where host and guest actually
-  exchange values.
-- **godot-sandbox** (https://github.com/libriscv/godot-sandbox) —
-  Godot's own upstream project embedding libriscv for sandboxed
-  scripting, with C++/Rust/Zig backends and, per the linked repo, now a
-  from-scratch GDScript-to-RISC-V compiler too. This is the same
-  substrate this repo already vendors and has independently proven
-  deterministic (`libriscv_vendor_test.cpp`: fuel metering bounds
-  execution, repeated runs produce byte-identical instruction counts) —
-  but it is Godot's own sanctioned sandbox, with its own Variant-ABI
-  extern-call convention, not this repo's bespoke one.
-
-**Preferred backend**: godot-sandbox's libriscv/Variant-ABI substrate
-over this repo's own s7/shrubbery stack (ADR 0006), because it's the
-Godot-blessed mechanism other backends (C++/Rust/Zig, and the linked
-GDScript compiler) already target — maximizing interop with real engine
-content (Nodes, scenes, exported properties) while keeping libriscv's
-proven determinism. This doesn't touch `fanout-core`/`sketch-core`'s
-Lean4 kernels; it's scoped to the scripted-content tier only.
-
-**Caveat on the GDScript front-end specifically**: adopting
-`godot-sandbox-gdscript-compiler` gets *a* GDScript-syntax language
-executing deterministically in RISC-V — it is a separate reimplementation
-of the language, not the same runtime as Godot's built-in `.gd`
-interpreter. Semantic parity (coroutines/`await`, signal auto-connection,
-duck-typed dynamic dispatch, the full class/inheritance model) is not
-guaranteed just because the syntax matches; it needs verifying against
-godot-sandbox's actual Variant-ABI/extern surface before scripts are
-assumed portable between "runs in the editor" and "runs in the sandbox."
-
-**taskweft's role — reuse `udonweft`'s shape, don't invent a new one**:
-`taskweft/udonweft` already proves this exact pattern is buildable: a
-Lean4-verified small-step VM (9 opcodes, proven `step`/`run` semantics —
-`step_halted`, `run_mono`, etc.) plus a full extern-symbol taxonomy
-(31,914 `VRC.Udon.Wrapper.dll` signatures), with taskweft's RECTGTN plan
-output lowering into it. `taskweft/godotweft` is the Godot-side half of
-the same precursor — it already carries the `extension_api-4-7-*.json`
-GDExtension API dumps, exactly analogous to udonweft's `KnownExterns`
-taxonomy, but has no VM formalization or lowering compiler yet. The
-concrete, scoped next step is the missing half: a "godotweft-compiler"
-that is to `godot-sandbox` what `udonweft` is to Udon — a Lean4-verified
-opcode/step/run model (or a direct proof over godot-sandbox's actual
-RISC-V/Variant-ABI boundary, skipping a bespoke opcode set if that's the
-smaller increment) plus a taskweft-JSON-LD-to-RISC-V lowering. This is
-genuinely new work, the same size class as `udonweft` itself — not a
-small follow-up.
-
-**Resulting division of labor**:
-- Programmer-authored deterministic gameplay logic (combat math,
-  movement, item effects): GDScript syntax via
-  `godot-sandbox-gdscript-compiler`, targeting godot-sandbox directly —
-  no Lisp in this path.
-- Planner-driven AI/quest/NPC goal logic: taskweft's RECTGTN
-  (`plan`/`replan`, JSON-LD domains — already in production use in this
-  very repo as `plan/bootstrap-domain.json`), lowered into godot-sandbox's
-  RISC-V/Variant ABI the way `udonweft` already does for Udon Assembly.
-- This repo's own s7-in-libriscv tier (ADR 0006) either narrows to
-  content godot-sandbox's backends don't cover well, or is retired in
-  favor of standardizing on godot-sandbox outright — worth a follow-up
-  ADR once the godotweft-compiler direction is scoped further, rather
-  than deciding it here.
+Consolidated into ADRs (was prose here; see those for the full
+analysis and history):
+[0047](docs/decisions/0047-godot-sandbox-vs-bespoke-s7-stack-reviewed-superseded.md)
+(native GDScript / GDExtension / Variant API / godot-sandbox aren't
+interchangeable; godot-sandbox was recommended as the preferred
+backend but that recommendation was superseded in practice — ADR 0028
+and everything since built on this repo's own s7-in-libriscv stack
+instead) and
+[0048](docs/decisions/0048-dont-reimplement-gdscript-via-shrubbery-s7.md)
+(shrubbery+s7 is not, and shouldn't try to become, a GDScript
+implementation — adopt `godot-sandbox-gdscript-compiler` directly if
+GDScript-in-sandbox is ever wanted).
 
 ## Game concept: Sigil Fabric (working title)
 
@@ -132,35 +64,8 @@ effects to only the players who'd actually see them.
 - [ ] Basic damage/health resolution in fanout-core or a new adjacent
   Lean module, since nothing currently models HP or spell resolution
 
-- [ ] s7, a Scheme interpreter as a typed gdscript compiler on libriscv https://github.com/v-sekai-multiplayer-fabric/godot-sandbox-gdscript-compiler see shrubbery
-  - Reviewed: **no** — not as stated. `godot-sandbox-gdscript-compiler` is
-    a from-scratch native compiler (its own lexer/parser/AST/IR/optimizer/
-    register allocator/RISC-V codegen/ELF builder in `src/`) that compiles
-    real GDScript source directly to RISC-V machine code for Godot
-    Sandbox. Shrubbery (per ADR 0006/0007) is only an indentation-based
-    *reader* layer in front of s7's s-expressions — it changes how text is
-    grouped into syntax trees, not what semantics run underneath, and its
-    own docs describe it as deliberately "leaving further parsing to
-    another layer." It has no notion of GDScript's actual grammar
-    (`func`/`var`/`class_name`/`extends`/`@export`/type hints), and real
-    `.gd` source is not shrubbery notation — a shrubbery reader in front
-    of s7 cannot parse existing GDScript files as-is.
-  - What would actually be needed to call it "GDScript": not just a
-    reader, but GDScript's semantics rebuilt on top of s7 — a Variant
-    type system, class/inheritance dispatch, the Node-tree/signal model,
-    typed properties — none of which s7 or shrubbery provide, and all of
-    which the referenced compiler already implements natively and
-    directly targets RISC-V/Godot Sandbox for.
-  - Recommendation: don't reimplement GDScript via shrubbery+s7. If
-    GDScript-in-sandbox is actually wanted, adopt/vendor
-    `godot-sandbox-gdscript-compiler` directly — it already solves this
-    exact problem, end to end, and duplicating it in s7 would be strictly
-    more work for a worse-fitting result. Keep shrubbery scoped to what
-    ADR 0006 actually chose it for: a friendlier surface syntax over s7's
-    own s-expressions for this repo's fuel-bounded simulation-scripting
-    tier (mission scripts, loot tables, NPC behavior, e.g. this doc's
-    Sigil Fabric spell scripts) — a different, narrower, determinism-
-    driven problem than general GDScript compatibility.
+- [ ] s7 as a typed GDScript compiler on libriscv, via shrubbery — reviewed
+  and rejected, see [ADR 0048](docs/decisions/0048-dont-reimplement-gdscript-via-shrubbery-s7.md)
 - [ ] using the flow actor model
 - [ ] 1000 players and linear fanout scaling zones
 - [ ] Elixir/OTP hub peer (HTTP/3 client that connects/reconnects to zone servers) — no Elixir code exists yet
@@ -176,9 +81,12 @@ effects to only the players who'd actually see them.
 - [x] Interest management: players only receive updates for entities within a kinematically-expanded visibility range, not the whole zone
 - [x] Client-side rendering only (Godot) — all authoritative game logic runs server-side in fanout-core
 - [x] Sketch/stroke-based drawing subsystem (`sketch-core`): polyline tessellation + intersection graph, reproducing cassie's stroke pipeline minus the beautify solver (raw Schneider-fit strokes for now, rougher but functional)
-- [x] Sandboxed Lisp (s7-on-libriscv) scripting tier for simulation content, intended for mission scripts / loot tables / NPC behavior (ADR 0006)
+- [x] Sandboxed Lisp (s7-on-libriscv) scripting tier for simulation content, intended for mission scripts / loot tables / NPC behavior (ADR 0006), reaffirmed as the primary interpreted path over AOT-compilation (ADR 0028)
+- [x] Shrubbery-notation surface reader over s7's s-expressions (ADR 0033), ported to s7 itself and verified byte-for-byte against the Python version (ADR 0037); rejects raw Lisp-shaped top-level statements by construction (ADR 0044)
+- [x] `define-record`/`record-with` macros for immutable-update boilerplate (ADR 0034)
+- [x] Real scripted content authored on the s7 sandbox: loot tables, combat, progression (ADR 0030/0031)
+- [x] `taskweft`'s full HTN-planner/ReBAC/temporal-reasoning/HRR core ported to shrubbery and verified layer-by-layer against real domains and the Lean source's own proven values, through full integration (ADR 0035-0046)
 - [ ] Cassie-style stroke "beautify" (dense PCG constraint solver, bit-identical across peers) — vendoring planned, not yet implemented (ADR 0003)
-- [ ] Concrete scripted-content call shapes (mission scripts, loot tables, NPC behavior) on top of the s7 sandbox — mechanism exists, no content authored yet
 - [ ] Integration/reference against Artifacts MMO's live game API (`artifacts_mmo_h3_client`) — HTTP/3 client exists, no gameplay wired to it yet
 
 - [x] Flow-based C++ zone/world server (`picoquic_fanout_server`), terminating QUIC/HTTP-3/WebTransport itself via a vendored picoquic+picotls+mbedtls stack, no sidecar

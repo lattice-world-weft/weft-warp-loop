@@ -45,3 +45,4 @@ weft-warp-loop stack. One decision per file, numbered in acceptance order.
 - [0040 — Taskweft port Layer 3a complete: Temporal.lean](0040-taskweft-layer3a-temporal-complete.md)
 - [0041 — Taskweft port Layer 3b complete: Iso8601Duration.lean's real recursive-descent parser](0041-taskweft-layer3b-iso8601duration-complete.md)
 - [0042 — Taskweft port Layer 4 complete: HRR/Basic.lean, and a cold-interpreter fuel anomaly](0042-taskweft-layer4-hrr-cold-interpreter-fuel-anomaly.md)
+- [0043 — Taskweft port Layer 5: WitnessDAG.lean confirmed non-portable, skipped](0043-taskweft-layer5-witnessdag-non-portable.md)

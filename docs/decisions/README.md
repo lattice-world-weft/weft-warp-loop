@@ -29,3 +29,4 @@ weft-warp-loop stack. One decision per file, numbered in acceptance order.
 - [0024 — Emit RISC-V assembly text and reuse the vendored assembler, not a hand-rolled machine-code encoder](0024-emit-riscv-assembly-text-not-hand-encoded-machine-code.md)
 - [0025 — Compiled-content ELFs are freestanding, with entry point set directly to the compiled function](0025-compiled-content-elf-entry-point-is-the-function-itself.md)
 - [0026 — Closures and list/array operations are required scope, not deferred](0026-closures-and-lists-are-required-not-deferred.md)
+- [0027 — Compile List/Array content against SlotMap-shaped fixed-capacity collections, never a real allocator](0027-slotmap-shaped-fixed-capacity-collections-no-allocator.md)

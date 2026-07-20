@@ -2,7 +2,10 @@
 
 ## Status
 
-Proposed.
+Superseded by [ADR 0028](0028-interpret-first-compile-later-supersedes-0014.md)
+for the primary execution path — this ADR's pipeline (checkpoints
+1-4 shipped as ADR 0015-0025) remains valid as a deferred, optional
+optimization, not the mandatory path this ADR originally required.
 
 ## Decision
 

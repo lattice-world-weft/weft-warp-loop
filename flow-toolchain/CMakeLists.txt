@@ -401,6 +401,17 @@ add_executable(s7_riscv_eval_int_test
 target_include_directories(s7_riscv_eval_int_test PRIVATE examples)
 target_link_libraries(s7_riscv_eval_int_test PRIVATE riscv)
 
+# --- s7_riscv_loot_golden_test: checkpoint 3 of the "real content through
+# interpreted s7" plan (ADR 0028) - loads riscv-guests/content/loot.scm
+# (hand-ported from v-sekai-multiplayer-fabric/loot) into two independent
+# Machine instances and checks both agree with each other AND with the
+# Lean4 reference value (fanout-core/LootGoldenVectorScratch.lean).
+add_executable(s7_riscv_loot_golden_test
+  examples/s7_riscv_loot_golden_test.cpp
+  examples/s7_riscv_core.cpp)
+target_include_directories(s7_riscv_loot_golden_test PRIVATE examples)
+target_link_libraries(s7_riscv_loot_golden_test PRIVATE riscv)
+
 # --- s7_riscv_actor_test: a real Flow actor (s7_riscv_actor.actor.cpp)
 # calling into the libriscv-sandboxed s7 guest (riscv-guests/s7_guest.elf,
 # built from riscv-guests/s7_guest_main.c - see riscv-guests/README.md for

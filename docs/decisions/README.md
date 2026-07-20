@@ -45,4 +45,6 @@ weft-warp-loop stack. One decision per file, numbered in acceptance order.
 - [0040 — Taskweft port Layer 3a complete: Temporal.lean](0040-taskweft-layer3a-temporal-complete.md)
 - [0041 — Taskweft port Layer 3b complete: Iso8601Duration.lean's real recursive-descent parser](0041-taskweft-layer3b-iso8601duration-complete.md)
 - [0042 — Taskweft port Layer 4 complete: HRR/Basic.lean, and a cold-interpreter fuel anomaly](0042-taskweft-layer4-hrr-cold-interpreter-fuel-anomaly.md)
-- [0043 — Taskweft port Layer 5: WitnessDAG.lean confirmed non-portable, skipped](0043-taskweft-layer5-witnessdag-non-portable.md)
+- [0043 — Taskweft port Layer 5: WitnessDAG.lean confirmed non-portable, skipped (superseded by 0045)](0043-taskweft-layer5-witnessdag-non-portable.md)
+- [0044 — Shrubbery source rejects raw parenthesized top-level statements](0044-shrubbery-rejects-raw-toplevel-parens.md)
+- [0045 — Taskweft port Layer 5 complete: WitnessDAG.lean ported via a minimal own QuickCheck-style fuzzer](0045-taskweft-layer5-witnessdag-ported-via-own-fuzzer.md)

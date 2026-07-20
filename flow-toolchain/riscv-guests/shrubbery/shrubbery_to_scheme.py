@@ -201,6 +201,32 @@ def parse_binding_list(inner):
     return bindings
 
 
+def check_no_avoidable_raw_toplevel(header, child):
+    # Top-level lines are always either a block header (define/let/cond,
+    # child is not None) or a one-off statement like a define-record/
+    # record-with declaration. A raw parenthesized statement at this
+    # level - e.g. '(define-record level idx ...)' instead of
+    # 'define-record(level, idx, ...)' - is never actually necessary:
+    # nothing that legitimately needs the raw-parens escape hatch
+    # (lambda's own parameter list, quote/quasiquote/unquote sugar,
+    # vector/char literals) shows up bare at the top level, only inside
+    # a define's body. Call syntax reads like a normal language, per
+    # this project's own stated goal for shrubbery notation - a
+    # standalone '(name a b c)' line is exactly the "looks like Lisp"
+    # shape that goal rules out, and it's always mechanically
+    # rewritable as 'name(a, b, c)' with the same result.
+    if child is not None:
+        return
+    text = header.strip()
+    if not text.startswith('('):
+        return
+    raise ShrubberyError(
+        f"raw parenthesized top-level statement not allowed - shrubbery "
+        f"source should read like a normal language, not Lisp: rewrite "
+        f"{text!r} as call syntax, e.g. 'name(a, b, c)' instead of "
+        f"'(name a b c)'")
+
+
 def block_to_body(block):
     """A block's children, each either a plain expression line (no colon
     header handling needed) or a nested special form - concatenated as a
@@ -297,6 +323,8 @@ def shrubbery_to_scheme(text):
     tree, end = build_block_tree(lines, 0, 0)
     if end != len(lines):
         raise ShrubberyError(f"unexpected indentation at line: {lines[end]!r}")
+    for header, child in tree:
+        check_no_avoidable_raw_toplevel(header, child)
     forms = [line_to_sexpr(header, child) for header, child in tree]
     return '\n'.join(forms) + '\n'
 

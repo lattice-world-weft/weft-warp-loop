@@ -6,7 +6,7 @@
 // replanPreservesVerified) need no porting - proofs about the two
 // functions below, not new runtime code.
 
-(define-record plan-solution-tree complete-tree failure-node recovery-point verified)
+define-record(plan-solution-tree, complete-tree, failure-node, recovery-point, verified)
 
 // ReentrantPlanner.markVerified
 define mark-verified(st, node-id):

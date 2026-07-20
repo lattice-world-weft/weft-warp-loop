@@ -37,7 +37,7 @@ define range-loop(i, n, acc):
 define range(n):
   range-loop(0, n, '())
 
-(define-record fw-result dist has-negative-cycle negative-cycle-nodes)
+define-record(fw-result, dist, has-negative-cycle, negative-cycle-nodes)
 
 // FloydWarshall.fwStep - d and the return value are both Nat -> Nat -> Int
 // closures, matching the Lean source's own function-valued distance map.

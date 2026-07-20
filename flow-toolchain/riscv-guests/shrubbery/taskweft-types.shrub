@@ -34,14 +34,14 @@ define filter(pred, lst):
     | pred(car(lst)): cons(car(lst), filter(pred, cdr(lst)))
     | else: filter(pred, cdr(lst))
 
-(define-record relationship subject relation object)
-(define-record action-model success-prob cost)
-(define-record state-var id val)
-(define-record timeline-entry action-id start-time end-time)
-(define-record eclass parent nodes)
-(define-record plan-state executable metadata failed paused-at prev-tree current-time vars history-timeline current-blacklist next-node-id e-classes)
-(define-record solution-node node-id content status tag shadow-state tried-methods-idx)
-(define-record solution-tree nodes edges)
+define-record(relationship, subject, relation, object)
+define-record(action-model, success-prob, cost)
+define-record(state-var, id, val)
+define-record(timeline-entry, action-id, start-time, end-time)
+define-record(eclass, parent, nodes)
+define-record(plan-state, executable, metadata, failed, paused-at, prev-tree, current-time, vars, history-timeline, current-blacklist, next-node-id, e-classes)
+define-record(solution-node, node-id, content, status, tag, shadow-state, tried-methods-idx)
+define-record(solution-tree, nodes, edges)
 
 // Types.pruneNode: drop a node (and any edge touching it) from a
 // SolutionTree by node_id.

@@ -8,7 +8,7 @@
 // check-relation-expr, already ported in taskweft-capabilities.shrub -
 // concatenate that file first when using this one.
 
-(define-record uni-goal subj expr obj)
+define-record(uni-goal, subj, expr, obj)
 
 // ReBACGoal.uniSatisfied
 define uni-satisfied(graph, fuel, g):

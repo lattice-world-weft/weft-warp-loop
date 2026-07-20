@@ -245,6 +245,18 @@
 (define (join-space-comma parts)
   (if (null? parts) "" (apply string-append (car parts) (map (lambda (p) (string-append ", " p)) (cdr parts)))))
 
+; Matches shrubbery_to_scheme.py's check_no_avoidable_raw_toplevel exactly
+; (see that function's comment for why this is scoped to the top level
+; only, not every raw-parens use anywhere in a file).
+(define (check-no-avoidable-raw-toplevel header child)
+  (if (and (not child) (> (string-length (strip header)) 0)
+           (char=? (string-ref (strip header) 0) #\())
+      (error 'shrubbery-error
+        (string-append "raw parenthesized top-level statement not allowed - shrubbery "
+          "source should read like a normal language, not Lisp: rewrite " (strip header)
+          " as call syntax, e.g. 'name(a, b, c)' instead of '(name a b c)'"))
+      #t))
+
 (define (shrubbery->scheme text)
   (let* ((lines (parse-shrub-lines text))
          (tree-result (build-block-tree lines 0 0))
@@ -252,7 +264,9 @@
          (end (cdr tree-result)))
     (if (not (= end (length lines)))
         (error 'shrubbery-error "unexpected indentation")
-        (join-newline (map (lambda (entry) (line->sexpr (car entry) (cadr entry))) tree)))))
+        (begin
+          (for-each (lambda (entry) (check-no-avoidable-raw-toplevel (car entry) (cadr entry))) tree)
+          (join-newline (map (lambda (entry) (line->sexpr (car entry) (cadr entry))) tree))))))
 
 (define (join-newline parts)
   (if (null? parts) "" (apply string-append (car parts) (map (lambda (p) (string-append "\n" p)) (cdr parts)))))

@@ -31,7 +31,7 @@ define list-any(pred, lst):
     | pred(car(lst)): #t
     | else: list-any(pred, cdr(lst))
 
-(define-record dur-component unit whole frac-milli)
+define-record(dur-component, unit, whole, frac-milli)
 
 define is-digit(c):
   (and (>= (char->integer c) (char->integer #\0)) (<= (char->integer c) (char->integer #\9)))

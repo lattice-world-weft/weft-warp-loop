@@ -35,3 +35,4 @@ weft-warp-loop stack. One decision per file, numbered in acceptance order.
 - [0030 — Hand-ported Scheme content lives under riscv-guests/content/, verified against a Lean4 golden vector](0030-ported-content-lives-under-riscv-guests-content.md)
 - [0031 — Combat and progression ported to s7; filter is not a builtin in this s7 build](0031-combat-and-progression-ported-filter-not-builtin.md)
 - [0032 — One source of truth: no duplicated copies of upstream repos' source](0032-one-source-of-truth-no-duplicated-upstream-copies.md)
+- [0033 — A minimal shrubbery-lite reader, as an offline preprocessor, closes ADR 0006's unstarted item](0033-shrubbery-lite-reader-offline-preprocessor.md)

@@ -19,11 +19,26 @@ which breaks the fixed-ISA determinism libriscv provides. The fix is to
 extend the compiler [ADR 0013](0013-mechanize-lean4-to-s7-port-via-gdscript-compiler-shape.md)
 already scopes one stage further: instead of stopping at generated s7
 *source text* for the interpreter to run, lower the same restricted IR
-(plain data, total functions) straight to RISC-V machine code, ahead of
-time at content-load rather than per-call. Both Lean4-ported content and
-hand-authored s7 scripts compile through this path and run as genuine
-native RISC-V code inside libriscv; s7's interpreter is demoted to a
-reference-semantics and devtool role, not the production execution path.
+(plain data, total functions) straight to RISC-V machine code, entirely
+at build/deploy time — never lazily at content-load, never per-call.
+The running server only ever loads the resulting precompiled RISC-V ELF
+binaries through libriscv, the same way `godot-sandbox-gdscript-compiler`
+itself never ships inside godot-sandbox's runtime, only its ELF output
+does. s7 — interpreter and compiler alike — evaporates at runtime: it
+exists purely as an offline toolchain component (reference semantics,
+review, and the compiler's own implementation language), with zero
+footprint in the deployed process. Both Lean4-ported content and
+hand-authored s7 scripts go through this same offline path.
+
+Target: single-item compile stays under 5 seconds (one script or table,
+not a full rebuild). No RISC-V codegen, register allocator, or ELF
+builder existed in this repo before ADR 0013, so this is unmeasured, but
+it's a reasonable bar — the reference GDScript compiler has no LLVM or
+heavyweight optimizer in its pipeline either, and content-sized inputs
+(a spell script, a loot table) are tiny compared to what it was built
+against. Under that bar, a "save, recompile, run" loop reads as
+hot-reload, not a real build step, which is what actually answers the
+workflow-cost concern below — not abandoning offline compilation.
 
 ## Consequences
 
@@ -37,4 +52,11 @@ for choosing s7 at all) still needs a real execution story once
 compiled — closures need an actual calling convention and heap in the
 generated RISC-V code, not tree-walking, a nontrivial compiler-backend
 problem the reference GDScript project's own `riscv_codegen.h/cpp`
-already solved for a simpler, closure-free language.
+already solved for a simpler, closure-free language. Losing s7's live
+interpreter also loses the fast edit-and-immediately-run loop content
+authors had — mitigated, not eliminated, by the <5s target above: a
+content author still waits on a build, just a short enough one that it
+doesn't break flow. Revisit trigger: if real compile times land well
+above 5s once the backend exists, the interpreter-fallback option this
+ADR currently rules out is back on the table for iteration, with
+compiled output still required before anything ships.

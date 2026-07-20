@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 K. S. Ernest (iFire) Lee
 #
-# Real end-to-end proof for picoquic_fanout_server's ZPB verb (ADR 0008
+# Real end-to-end proof for picoquic_fanout_server's ZPB verb (ADR 0008/0009
 # zone-authority/interest dispatch): two aioquic connections, each sends
-# "ZPB <x> <y> <z>\n" + a distinct 100-byte payload landing in the one
+# "ZPB <x> <y> <z> <vx> <vy> <vz>\n" + a distinct 100-byte payload landing
+# in the one
 # default zone the server allocates at startup (fanout_core_ffi.cpp), and
 # each must receive the OTHER's payload - not its own - via zone-based
 # fanout, not the flat per-topic broadcast test_picoquic_fanout.py already
@@ -91,7 +92,7 @@ def main():
     a = Client(addr)
     a.wait_for_handshake()
     payload_a1 = bytes((i % 256 for i in range(ENTITY_PACKET_SIZE)))
-    a.send_line(0, "ZPB 0 0 0\n")
+    a.send_line(0, "ZPB 0 0 0 0 0 0\n")
     a.send_bytes(0, payload_a1)
     a.pump(time.time() + 0.3)
 
@@ -100,7 +101,7 @@ def main():
     b = Client(addr)
     b.wait_for_handshake()
     payload_b = bytes(((i + 1) % 256 for i in range(ENTITY_PACKET_SIZE)))
-    b.send_line(0, "ZPB 1 2 3\n")
+    b.send_line(0, "ZPB 1 2 3 0 0 0\n")
     b.send_bytes(0, payload_b)
     b.pump(time.time() + 1.0)
     a.pump(time.time() + 1.0)
@@ -109,7 +110,7 @@ def main():
     # SHOULD reach B. A distinct payload from A's first (which nobody
     # could have received) keeps the assertion unambiguous.
     payload_a2 = bytes(((i + 2) % 256 for i in range(ENTITY_PACKET_SIZE)))
-    a.send_line(0, "ZPB 4 5 6\n")
+    a.send_line(0, "ZPB 4 5 6 0 0 0\n")
     a.send_bytes(0, payload_a2)
     a.pump(time.time() + 1.0)
     b.pump(time.time() + 1.0)

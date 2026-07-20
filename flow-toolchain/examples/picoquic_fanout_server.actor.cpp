@@ -12,22 +12,28 @@
 // Wire protocol, one line per stream:
 //   SUB <topic>\n
 //   PUB <topic>\n<100-byte lean-entity-packet payload>
-//   ZPB <x> <y> <z>\n<100-byte lean-entity-packet payload>
+//   ZPB <x> <y> <z> <vx> <vy> <vz>\n<100-byte lean-entity-packet payload>
 // A subscriber receives each PUB payload verbatim, pushed back on the same
 // bidirectional stream it sent its SUB on.
 //
-// ZPB ("zone publish", ADR 0008) is the Hilbert-curve zone-authority/
+// ZPB ("zone publish", ADR 0008/0009) is the Hilbert-curve zone-authority/
 // interest alternative to topic-based SUB/PUB: no topic, no prior
 // subscription - the position IS the routing key. Each ZPB moves the
-// sender's entity to (x, y, z) (Fanoutcore/ZoneDispatch.lean's migration:
-// out of whichever zone it was in, into whichever zone is now
-// authoritative for that position) and fans the payload out to that
-// zone's authority members plus curve-adjacent interest members
-// (`fanout_zone_targets`) - not a flat per-topic broadcast. Zones
-// themselves aren't allocated over the wire yet (no verb for it) - this
-// increment proves the dispatch path end to end against zones a test
-// harness allocates directly via the FFI, wire-level zone provisioning is
-// later, separate work.
+// sender's entity to (x, y, z) with velocity (vx, vy, vz) - signed
+// micrometres/tick as sent, `std::abs`'d before crossing the FFI boundary
+// since Fanoutcore.EntityRecord only tracks velocity *magnitude* per axis
+// (Fanoutcore/ZoneDispatch.lean's migration: out of whichever zone it was
+// in, into whichever zone is now authoritative for that position, with
+// the entity's RTT-derived lookahead window - `picoquic_get_rtt`,
+// converted to ticks at this FFI boundary, not guessed at with one fixed
+// constant for every connection - carried along for k-tick ghost
+// expansion) and fans the payload out to that zone's authority members
+// plus curve-adjacent interest members whose own ghost radius could
+// actually reach the publisher (`fanout_zone_targets`) - not a flat
+// per-topic broadcast. Zones themselves aren't allocated over the wire
+// yet (no verb for it) - this increment proves the dispatch path end to
+// end against zones a test harness allocates directly via the FFI,
+// wire-level zone provisioning is later, separate work.
 
 #include "fanout_core_ffi.h"
 #include "sketch_core_ffi.h"
@@ -67,23 +73,62 @@ uint64_t connIdOf(picoquic_cnx_t* cnx) {
 	return reinterpret_cast<uint64_t>(cnx);
 }
 
-// Parses "x y z" (three space-separated signed decimal integers, the ZPB
-// header's payload) via non-throwing std::from_chars - a malformed header
-// from one connection reports a plain parse failure rather than risking
-// any exception near this codebase's core dispatch path.
-bool parseZpbCoords(const std::string& rest, int64_t& x, int64_t& y, int64_t& z) {
+// EntityRecord only tracks velocity *magnitude* per axis (direction plays
+// no role in ghostExpansion) - avoids pulling in <cstdlib>'s overload set
+// just for one int64_t absolute value.
+uint64_t absMagnitude(int64_t v) {
+	return v < 0 ? static_cast<uint64_t>(-v) : static_cast<uint64_t>(v);
+}
+
+// Parses "x y z vx vy vz" (six space-separated signed decimal integers,
+// the ZPB header's payload) via non-throwing std::from_chars - a
+// malformed header from one connection reports a plain parse failure
+// rather than risking any exception near this codebase's core dispatch
+// path.
+bool parseZpbFields(const std::string& rest, int64_t& x, int64_t& y, int64_t& z, int64_t& vx, int64_t& vy,
+                     int64_t& vz) {
 	const char* begin = rest.data();
 	const char* end = rest.data() + rest.size();
-	auto r1 = std::from_chars(begin, end, x);
-	if (r1.ec != std::errc() || r1.ptr >= end || *r1.ptr != ' ') {
-		return false;
+	const char* p = begin;
+	int64_t* fields[6] = { &x, &y, &z, &vx, &vy, &vz };
+	for (int i = 0; i < 6; i++) {
+		auto r = std::from_chars(p, end, *fields[i]);
+		bool last = (i == 5);
+		if (r.ec != std::errc()) {
+			return false;
+		}
+		if (last) {
+			return r.ptr == end;
+		}
+		if (r.ptr >= end || *r.ptr != ' ') {
+			return false;
+		}
+		p = r.ptr + 1;
 	}
-	auto r2 = std::from_chars(r1.ptr + 1, end, y);
-	if (r2.ec != std::errc() || r2.ptr >= end || *r2.ptr != ' ') {
-		return false;
-	}
-	auto r3 = std::from_chars(r2.ptr + 1, end, z);
-	return r3.ec == std::errc();
+	return true;
+}
+
+// This project's assumed simulation tick length, used only to convert a
+// connection's real measured RTT (picoquic_get_rtt, microseconds) into a
+// tick count for Fanoutcore's k-tick ghost expansion - not a substitute
+// for a per-connection measurement (RTT itself is real and per-
+// connection; this is the unit conversion factor between "microseconds"
+// and "ticks" that measurement needs, the same role Zone.lean's own doc
+// comments describe as "converted to ticks at the FFI boundary by the
+// caller"). No tick rate is configured or measured anywhere else in this
+// codebase yet (fanout_load_client sends all its ZPB ticks back-to-back,
+// unpaced, by design); 50ms/tick (20Hz) is a first, documented assumption
+// - a common game-server simulation rate, not derived from any real
+// measurement here - revisit once an actual configured tick rate exists
+// and read from that instead.
+constexpr uint64_t kSimTickMicros = 50000;
+
+// Real per-connection RTT (picoquic_get_rtt, microseconds), divided by
+// the assumed tick length and rounded up - a crossing observed with a
+// partial tick of RTT still needs a full tick of lookahead, not zero.
+uint64_t rttToTicks(picoquic_cnx_t* cnx) {
+	uint64_t rttMicros = picoquic_get_rtt(cnx);
+	return (rttMicros + kSimTickMicros - 1) / kSimTickMicros;
 }
 
 NetworkAddress sockaddrToNetworkAddress(const sockaddr_storage& addr) {
@@ -104,6 +149,7 @@ struct StreamState {
 	std::string topic;
 	uint64_t roomId = 0;
 	int64_t x = 0, y = 0, z = 0;
+	int64_t vx = 0, vy = 0, vz = 0;
 };
 
 // A sketch frame is [len u32 LE][len bytes of CSP1]. Cap len well above any
@@ -243,15 +289,20 @@ void handleZoneSub(BridgeState& state, picoquic_cnx_t* cnx, uint64_t streamId) {
 	state.delivery[connIdOf(cnx)] = { cnx, streamId };
 }
 
-// Moves the publisher's entity to (x, y, z) (Fanoutcore/ZoneDispatch.lean:
-// out of whichever zone it was in, into whichever zone is now
-// authoritative there), then relays payload to that zone's authority
-// members plus curve-adjacent interest members (fanout_zone_targets) -
-// the ADR 0008 rule, not a flat per-topic broadcast.
-void handleZonePub(BridgeState& state, picoquic_cnx_t* cnx, int64_t x, int64_t y, int64_t z, const uint8_t* payload,
-                    size_t payloadLen) {
+// Moves the publisher's entity to (x, y, z) with velocity (vx, vy, vz)
+// and this connection's real RTT-derived lookahead window
+// (Fanoutcore/ZoneDispatch.lean: out of whichever zone it was in, into
+// whichever zone is now authoritative there, ghost expansion sized to
+// this entity's own measured latency), then relays payload to that
+// zone's authority members plus curve-adjacent interest members
+// (fanout_zone_targets) - the ADR 0008/0009 rule, not a flat per-topic
+// broadcast.
+void handleZonePub(BridgeState& state, picoquic_cnx_t* cnx, int64_t x, int64_t y, int64_t z, int64_t vx, int64_t vy,
+                    int64_t vz, const uint8_t* payload, size_t payloadLen) {
 	uint64_t connId = connIdOf(cnx);
-	lean_object* moveRes = fanout_entity_move(connId, x, y, z);
+	uint64_t rttTicks = rttToTicks(cnx);
+	lean_object* moveRes =
+	    fanout_entity_move_v(connId, x, y, z, absMagnitude(vx), absMagnitude(vy), absMagnitude(vz), rttTicks);
 	lean_dec_ref(moveRes);
 
 	lean_object* res = fanout_zone_targets(connId, x, y, z);
@@ -317,8 +368,9 @@ void pumpStream(BridgeState& state, picoquic_cnx_t* cnx, uint64_t streamId, Stre
 				streamState.isSketch = true;
 				handleSketchSub(state, cnx, streamId, streamState);
 			} else if (verb == "ZPB") {
-				if (!parseZpbCoords(streamState.topic, streamState.x, streamState.y, streamState.z)) {
-					return; // malformed "x y z"; stop parsing this stream.
+				if (!parseZpbFields(streamState.topic, streamState.x, streamState.y, streamState.z, streamState.vx,
+				                    streamState.vy, streamState.vz)) {
+					return; // malformed "x y z vx vy vz"; stop parsing this stream.
 				}
 				streamState.isZonePub = true;
 				handleZoneSub(state, cnx, streamId);
@@ -355,12 +407,13 @@ void pumpStream(BridgeState& state, picoquic_cnx_t* cnx, uint64_t streamId, Stre
 			if (streamState.buf.size() < kEntityPacketSize) {
 				return;
 			}
-			handleZonePub(state, cnx, streamState.x, streamState.y, streamState.z,
-			              reinterpret_cast<const uint8_t*>(streamState.buf.data()), kEntityPacketSize);
+			handleZonePub(state, cnx, streamState.x, streamState.y, streamState.z, streamState.vx, streamState.vy,
+			              streamState.vz, reinterpret_cast<const uint8_t*>(streamState.buf.data()),
+			              kEntityPacketSize);
 			streamState.buf.erase(0, kEntityPacketSize);
-			// One ZPB payload per header, matching PUB - a fresh "ZPB x y z\n"
-			// header precedes each tick's payload, since position moves
-			// between ticks.
+			// One ZPB payload per header, matching PUB - a fresh
+			// "ZPB x y z vx vy vz\n" header precedes each tick's payload,
+			// since position and velocity both move between ticks.
 			streamState.headerParsed = false;
 		} else {
 			return; // SUB stream: nothing further to parse.

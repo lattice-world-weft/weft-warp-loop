@@ -34,6 +34,13 @@ lean_object* fanout_pub_targets(uint64_t room_id, uint64_t publisher_conn_id);
 lean_object* fanout_zone_alloc(uint64_t start_idx, uint64_t stop_idx);
 lean_object* fanout_zone_free(uint64_t zone_id);
 lean_object* fanout_entity_move(uint64_t conn_id, int64_t x, int64_t y, int64_t z);
+// Velocity (vx/vy/vz: micrometres/tick, magnitude per axis - direction
+// discarded, matching Fanoutcore.EntityRecord's own convention) and
+// RTT-derived lookahead window (rtt_ticks: 0 means no sample yet, falls
+// back to defaultLookaheadTicks) for k-tick ghost expansion
+// (Fanoutcore/Zone.lean's withinGhostRange).
+lean_object* fanout_entity_move_v(uint64_t conn_id, int64_t x, int64_t y, int64_t z, uint64_t vx, uint64_t vy,
+                                   uint64_t vz, uint64_t rtt_ticks);
 lean_object* fanout_entity_remove(uint64_t conn_id);
 lean_object* fanout_zone_targets(uint64_t publisher_conn_id, int64_t x, int64_t y, int64_t z);
 }

@@ -106,8 +106,12 @@ void sendAllTicks(picoquic_cnx_t* cnx, PlayerCtx& player) {
 	player.state = PlayerState::Publishing;
 	while (player.ticksRemaining > 0) {
 		int tick = player.ticksRemaining;
-		std::string zpbHeader =
-		    "ZPB " + std::to_string(player.playerId) + " " + std::to_string(tick) + " 0\n";
+		// vx/vy/vz: this load harness doesn't model real player motion (see
+		// the position note below - any coordinate lands in the same
+		// bootstrap zone), so it reports zero velocity - a real client
+		// reports its own actual per-axis speed here, driving the server's
+		// k-tick ghost expansion (Fanoutcore/Zone.lean's withinGhostRange).
+		std::string zpbHeader = "ZPB " + std::to_string(player.playerId) + " " + std::to_string(tick) + " 0 0 0 0\n";
 		std::vector<uint8_t> payload = makePayload(player.playerId, tick);
 		picoquic_add_to_stream(cnx, player.streamId, reinterpret_cast<const uint8_t*>(zpbHeader.data()),
 		                        zpbHeader.size(), 0);

@@ -376,6 +376,21 @@ target_compile_definitions(libriscv_vendor_test PRIVATE
   LIBRISCV_VENDOR_TEST_GUEST_ELF="${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/libriscv/examples/embed/fib.rv64.elf")
 target_link_libraries(libriscv_vendor_test PRIVATE riscv)
 
+# --- ir_compiled_content_test: checkpoint 4 of ADR 0013/0014's compiler -
+# loads a Lean4-compiled-to-RISC-V function (fanout-core/IrCodegenScratch.lean,
+# checkpoint 3) linked into a minimal freestanding ELF (no libc - see that
+# script's own header comment for the exact build recipe) and proves the
+# same determinism property ADR 0006 already established for the
+# interpreted s7 guest: two independent Machine instances given the
+# identical vmcall produce byte-identical instruction counts. The ELF
+# itself is not built by this CMake project (needs Lean4 + the separate
+# RISC-V toolchain, same reasoning as s7_guest.elf above); its path is
+# supplied as a compile definition, expected to already exist.
+add_executable(ir_compiled_content_test examples/ir_compiled_content_test.cpp)
+target_compile_definitions(ir_compiled_content_test PRIVATE
+  IR_COMPILED_CONTENT_TEST_GUEST_ELF="${CMAKE_CURRENT_SOURCE_DIR}/fanout-core/IrCodegenScratch_out.elf")
+target_link_libraries(ir_compiled_content_test PRIVATE riscv)
+
 # --- s7_riscv_actor_test: a real Flow actor (s7_riscv_actor.actor.cpp)
 # calling into the libriscv-sandboxed s7 guest (riscv-guests/s7_guest.elf,
 # built from riscv-guests/s7_guest_main.c - see riscv-guests/README.md for

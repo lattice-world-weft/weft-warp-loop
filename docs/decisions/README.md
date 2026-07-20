@@ -27,3 +27,4 @@ weft-warp-loop stack. One decision per file, numbered in acceptance order.
 - [0022 — Validate O(N+k) fanout scaling empirically, over porting the prior art's HilbertBroadphase](0022-empirical-onk-scaling-over-hilbert-broadphase-port.md)
 - [0023 — Extend the ZPB wire verb to carry velocity and RTT-derived lookahead](0023-zpb-wire-verb-carries-velocity-and-rtt-lookahead.md)
 - [0024 — Emit RISC-V assembly text and reuse the vendored assembler, not a hand-rolled machine-code encoder](0024-emit-riscv-assembly-text-not-hand-encoded-machine-code.md)
+- [0025 — Compiled-content ELFs are freestanding, with entry point set directly to the compiled function](0025-compiled-content-elf-entry-point-is-the-function-itself.md)

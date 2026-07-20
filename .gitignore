@@ -9,3 +9,8 @@ fanout_load_client.*.xml
 fanout_load_client_worker.*.xml
 fanout_load_client_multi.*.xml
 /flow-toolchain/sketch-core/.lake/
+# IrCodegenScratch.lean's intermediates (regenerated every run) - the
+# linked .elf it produces IS committed, matching s7_guest.elf's own
+# precedent of being a checked-in artifact, not a build output.
+/flow-toolchain/fanout-core/IrCodegenScratch_out.s
+/flow-toolchain/fanout-core/IrCodegenScratch_out.o

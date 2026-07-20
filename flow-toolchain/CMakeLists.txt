@@ -490,6 +490,30 @@ add_executable(s7_riscv_taskweft_reentrantplanner_test
 target_include_directories(s7_riscv_taskweft_reentrantplanner_test PRIVATE examples)
 target_link_libraries(s7_riscv_taskweft_reentrantplanner_test PRIVATE riscv)
 
+# --- s7_riscv_taskweft_capabilities_test: Layer 2 (part) of the taskweft
+# port - verifies taskweft-capabilities.shrub.
+add_executable(s7_riscv_taskweft_capabilities_test
+  examples/s7_riscv_taskweft_capabilities_test.cpp
+  examples/s7_riscv_core.cpp)
+target_include_directories(s7_riscv_taskweft_capabilities_test PRIVATE examples)
+target_link_libraries(s7_riscv_taskweft_capabilities_test PRIVATE riscv)
+
+# --- s7_riscv_taskweft_floydwarshall_test: Layer 2 (part) of the taskweft
+# port - verifies taskweft-floydwarshall.shrub.
+add_executable(s7_riscv_taskweft_floydwarshall_test
+  examples/s7_riscv_taskweft_floydwarshall_test.cpp
+  examples/s7_riscv_core.cpp)
+target_include_directories(s7_riscv_taskweft_floydwarshall_test PRIVATE examples)
+target_link_libraries(s7_riscv_taskweft_floydwarshall_test PRIVATE riscv)
+
+# --- s7_riscv_taskweft_rebacgoal_test: Layer 2 (part) of the taskweft port -
+# verifies taskweft-rebacgoal.shrub.
+add_executable(s7_riscv_taskweft_rebacgoal_test
+  examples/s7_riscv_taskweft_rebacgoal_test.cpp
+  examples/s7_riscv_core.cpp)
+target_include_directories(s7_riscv_taskweft_rebacgoal_test PRIVATE examples)
+target_link_libraries(s7_riscv_taskweft_rebacgoal_test PRIVATE riscv)
+
 # --- s7_riscv_actor_test: a real Flow actor (s7_riscv_actor.actor.cpp)
 # calling into the libriscv-sandboxed s7 guest (riscv-guests/s7_guest.elf,
 # built from riscv-guests/s7_guest_main.c - see riscv-guests/README.md for

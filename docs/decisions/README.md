@@ -41,3 +41,4 @@ weft-warp-loop stack. One decision per file, numbered in acceptance order.
 - [0036 — Taskweft port Layer 0: Types.lean's SolutionTree/e-graph model, not the simpler find_plan doc account](0036-taskweft-layer0-types-solutiontree-egraph-model.md)
 - [0037 — The shrubbery reader itself ported to s7, verified against the Python version's own output](0037-shrubbery-reader-ported-to-s7-verified-against-python.md)
 - [0038 — Taskweft port Layer 1 complete: planner core, MultiGoalDecomposition confirmed empty](0038-taskweft-layer1-planner-core-complete.md)
+- [0039 — Taskweft port Layer 2 complete: ReBAC (Capabilities, FloydWarshall, ReBACGoal)](0039-taskweft-layer2-rebac-complete.md)

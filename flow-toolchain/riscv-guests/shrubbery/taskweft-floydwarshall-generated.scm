@@ -1,0 +1,8 @@
+(define (list-any pred lst) (cond ((null? lst) #f) ((pred (car lst)) #t) (else (list-any pred (cdr lst)))))
+(define (filter-map f lst) (cond ((null? lst) '()) (else (let* ((r (f (car lst)))) (cond (r (cons r (filter-map f (cdr lst)))) (else (filter-map f (cdr lst))))))))
+(define (range-loop i n acc) (cond ((>= i n) (reverse acc)) (else (range-loop (+ i 1) n (cons i acc)))))
+(define (range n) (range-loop 0 n '()))
+(define-record fw-result dist has-negative-cycle negative-cycle-nodes)
+(define (fw-step k d) (lambda (i j) (min (d i j) (+ (d i k) (d k j)))))
+(define (fw-run-fold ks d) (cond ((null? ks) d) (else (fw-run-fold (cdr ks) (fw-step (car ks) d)))))
+(define (fw-run n g) (let* ((ks (range n)) (d (fw-run-fold ks g)) (has-cycle (list-any (lambda (i) (< (d i i) 0)) ks)) (cycle-nodes (filter-map (lambda (i) (if (< (d i i) 0) (cons i i) #f)) ks))) (make-fw-result d has-cycle cycle-nodes)))

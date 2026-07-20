@@ -2,7 +2,13 @@
 
 ## Status
 
-Accepted; no shrubbery port produced for this layer.
+Superseded by [0045](0045-taskweft-layer5-witnessdag-ported-via-own-fuzzer.md):
+a minimal own QuickCheck-style fuzzer removed the specific blocker this
+decision was about, making the escalation-ladder control flow portable
+after all. This record stays as-is below - it was the right call given
+what was known at the time (no reason to build a fuzzer had come up
+yet), and the analysis of *why* Plausible itself is non-portable is
+still accurate and worth keeping.
 
 ## Decision
 

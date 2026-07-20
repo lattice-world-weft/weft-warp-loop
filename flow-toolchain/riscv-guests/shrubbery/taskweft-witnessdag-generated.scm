@@ -1,0 +1,8 @@
+(define-record level idx walk-steps fin-bound num-inst)
+(define (default-ladder ) (list (make-level 0 256 256 200) (make-level 1 2000 1024 800) (make-level 2 16000 4096 2000)))
+(define (certify-witness-loop candidate-is-witness readback levels seed) (let* ((lvl (car levels)) (idx (level-idx lvl)) (fin-bound (level-fin-bound lvl)) (num-inst (level-num-inst lvl)) (rb (readback (level-walk-steps lvl))) (cert (qc-certify (lambda (w) (candidate-is-witness lvl w)) fin-bound num-inst seed))) (cond ((readback-found rb) (list #t idx (list "htn-planner-witness" idx (list 'found (readback-witness-idx rb))))) (cert (list #f idx (list "htn-planner-witness" idx 'provablyNone))) ((null? (cdr levels)) (list #t idx (list "htn-planner-witness" idx 'budgetHit))) (else (certify-witness-loop candidate-is-witness readback (cdr levels) (qc-xorshift32-next seed))))))
+(define (certify-witness candidate-is-witness readback levels seed) (certify-witness-loop candidate-is-witness readback levels seed))
+(define (default-candidate-is-witness lvl i) #f)
+(define-record readback value found witness-idx budget-hit)
+(define (default-readback steps) (make-readback (list) #f 0 #f))
+(define (run-witness-oracle seed) (certify-witness default-candidate-is-witness default-readback (default-ladder) seed))

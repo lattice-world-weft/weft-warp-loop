@@ -1,0 +1,53 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 K. S. Ernest (iFire) Lee
+//
+// A minimal deterministic QuickCheck-style property checker, so
+// lean/Planner/WitnessDAG.lean's certify/certifyWitness (ADR 0043,
+// previously skipped as non-portable because its real work happened
+// inside the vendored Plausible library's randomized Fin N sampler)
+// can actually be ported. Not a port of Plausible's own algorithm -
+// Plausible's real strategy (size-directed generators, shrinking on
+// failure) has no analog here. This is deliberately the simplest thing
+// that satisfies certifyWitness's actual usage: sample num-inst
+// candidate values from [0, bound) via a seeded xorshift32 stream (the
+// same proven shift-xor cascade as loot.shrub's rng-range, reproduced
+// here under a qc- prefix rather than shared across files - no
+// (load ...) inside guest content, ADR 0030/0031's standing rule), and
+// report whether any sampled value satisfies a caller-supplied
+// predicate within the budget.
+//
+// Deterministic in the seed, not true randomness - by design. Every
+// RNG-touching piece of content in this codebase (loot's own
+// xorshift32) has had to give the same answer on every machine for the
+// same call; a QuickCheck-style checker whose verdict depended on
+// wall-clock/thread-local entropy would break that property outright.
+// A #f/no-witness-found result is bounded random search within
+// num-inst trials, not a soundness proof - same caveat Plausible's own
+// documentation carries, inherited honestly rather than upgraded.
+
+define qc-u32(x):
+  logand(x, #xFFFFFFFF)
+
+define qc-xorshift32-next(s0):
+  let*(s1: qc-u32(logxor(s0, qc-u32(ash(s0, 13)))), s2: qc-u32(logxor(s1, ash(s1, -17))), s3: qc-u32(logxor(s2, qc-u32(ash(s2, 5))))):
+    s3
+
+// Testable.checkIO's replacement: samples up to num-inst candidate
+// values w in [0, bound) via the seeded stream; returns the first w
+// for which pred(w) holds, or #f if none of the num-inst samples did.
+define qc-search-loop(pred, bound, remaining, state):
+  cond:
+    | =(remaining, 0): #f
+    | else: let*(state2: qc-xorshift32-next(state), w: modulo(state2, bound)):
+        cond:
+          | pred(w): w
+          | else: qc-search-loop(pred, bound, -(remaining, 1), state2)
+
+// certify's replacement: true means a counterexample to
+// "for all w, not (candidate-is-witness w)" was found within the
+// budget - i.e. a witness candidate exists in [0, bound), found by
+// bounded random search rather than proof.
+define qc-certify(candidate-is-witness, bound, num-inst, seed):
+  cond:
+    | qc-search-loop(candidate-is-witness, bound, num-inst, seed): #t
+    | else: #f

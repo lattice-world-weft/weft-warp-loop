@@ -27,15 +27,21 @@ static std::string readFile(const char* path) {
 }
 
 int main() {
+	// Concatenated on the host, matching every other golden test - the
+	// guest never does its own (load ...); see combat.scm's header
+	// comment for why (a guest-side load would need a real filesystem
+	// syscall from inside libriscv's fuel-metered sandbox).
+	std::string macros = readFile("riscv-guests/content/record-macros.scm");
 	std::string defs = readFile("riscv-guests/content/progression.scm");
-	if (defs.empty()) {
-		fprintf(stderr, "could not read riscv-guests/content/progression.scm\n");
+	if (macros.empty() || defs.empty()) {
+		fprintf(stderr, "could not read riscv-guests/content/{record-macros,progression}.scm\n");
 		_exit(1);
 	}
+	defs = macros + "\n" + defs;
 
 	const std::string expr =
 		"(begin " + defs +
-		" (pr-credits (car (progression-replay (list (list 'grant 1) (list 'grant 1) (list 'sell 1 50) 'train (list 'buyArt 1))))))";
+		" (profile-credits (car (progression-replay (list (list 'grant 1) (list 'grant 1) (list 'sell 1 50) 'train (list 'buyArt 1))))))";
 
 	constexpr int64_t kLeanReferenceCredits = 150;
 	int64_t results[2];

@@ -29,11 +29,17 @@ static std::string readFile(const char* path) {
 }
 
 int main() {
+	// Concatenated on the host, matching every other golden test - the
+	// guest never does its own (load ...); see combat.scm's own header
+	// comment for why (a guest-side load would need a real filesystem
+	// syscall from inside libriscv's fuel-metered sandbox).
+	std::string macros = readFile("riscv-guests/content/record-macros.scm");
 	std::string combatDefs = readFile("riscv-guests/content/combat.scm");
-	if (combatDefs.empty()) {
-		fprintf(stderr, "could not read riscv-guests/content/combat.scm\n");
+	if (macros.empty() || combatDefs.empty()) {
+		fprintf(stderr, "could not read riscv-guests/content/{record-macros,combat}.scm\n");
 		_exit(1);
 	}
+	combatDefs = macros + "\n" + combatDefs;
 
 	// 30 'tick events, matching the golden vector's event sequence
 	std::string ticks;
@@ -41,7 +47,7 @@ int main() {
 
 	const std::string expr =
 		"(begin " + combatDefs +
-		" (st-hp (car (combat-replay (list 'spawn " + ticks + "'attack)))))";
+		" (state-hp (car (combat-replay (list 'spawn " + ticks + "'attack)))))";
 
 	constexpr int64_t kLeanReferenceHp = 90;
 	int64_t results[2];

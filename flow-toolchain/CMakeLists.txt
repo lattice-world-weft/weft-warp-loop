@@ -431,6 +431,15 @@ add_executable(s7_riscv_progression_golden_test
 target_include_directories(s7_riscv_progression_golden_test PRIVATE examples)
 target_link_libraries(s7_riscv_progression_golden_test PRIVATE riscv)
 
+# --- s7_riscv_macro_test: verifies riscv-guests/content/record-macros.scm's
+# define-record/record-with macros in isolation before combat.scm depends on
+# them.
+add_executable(s7_riscv_macro_test
+  examples/s7_riscv_macro_test.cpp
+  examples/s7_riscv_core.cpp)
+target_include_directories(s7_riscv_macro_test PRIVATE examples)
+target_link_libraries(s7_riscv_macro_test PRIVATE riscv)
+
 # --- s7_riscv_actor_test: a real Flow actor (s7_riscv_actor.actor.cpp)
 # calling into the libriscv-sandboxed s7 guest (riscv-guests/s7_guest.elf,
 # built from riscv-guests/s7_guest_main.c - see riscv-guests/README.md for

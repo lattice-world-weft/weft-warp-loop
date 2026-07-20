@@ -12,11 +12,10 @@
 ; changes, this file is stale until re-ported by hand against the new
 ; commit - nothing here re-checks upstream automatically.
 ;
-; Profile is a 4-slot vector: #(credits affinity items arts).
-; items/arts are plain Scheme lists of (item . count) pairs / art ids -
-; this is the real content ADR 0026 found combat/progression/loot
-; leaning on (map/filter/assoc over lists), now handled for free by
-; s7's interpreter instead of needing new compiler engineering.
+; Uses record-macros.scm's define-record/record-with (ADR 0034), same
+; as combat.scm - no (load ...): record-macros.scm is concatenated on
+; the host side, the guest never loads its own files (a libriscv
+; sandbox/gas-limit concern, not just style - see combat.scm's header).
 
 ; `filter` is not a builtin in this s7 build (verified: map/assoc/member
 ; all resolve fine, filter alone throws "unbound variable") - defined
@@ -26,11 +25,7 @@
         ((pred (car lst)) (cons (car lst) (filter pred (cdr lst))))
         (else (filter pred (cdr lst)))))
 
-(define (make-profile credits affinity items arts) (vector credits affinity items arts))
-(define (pr-credits p) (vector-ref p 0))
-(define (pr-affinity p) (vector-ref p 1))
-(define (pr-items p) (vector-ref p 2))
-(define (pr-arts p) (vector-ref p 3))
+(define-record profile credits affinity items arts)
 
 (define initial-profile (make-profile 200 15 '() '()))
 
@@ -39,25 +34,22 @@
 
 ; ProgressionCore.countOf
 (define (count-of p item)
-  (let ((e (assoc item (pr-items p))))
+  (let ((e (assoc item (profile-items p))))
     (if e (cdr e) 0)))
 
 ; ProgressionCore.addItem
 (define (add-item p item d)
-  (if (assoc item (pr-items p))
-      (make-profile (pr-credits p) (pr-affinity p)
-                     (map (lambda (e) (if (= (car e) item) (cons (car e) (+ (cdr e) d)) e)) (pr-items p))
-                     (pr-arts p))
-      (make-profile (pr-credits p) (pr-affinity p)
-                     (append (pr-items p) (list (cons item d)))
-                     (pr-arts p))))
+  (if (assoc item (profile-items p))
+      (record-with make-profile '(credits affinity items arts) p
+        (items (map (lambda (e) (if (= (car e) item) (cons (car e) (+ (cdr e) d)) e)) (profile-items p))))
+      (record-with make-profile '(credits affinity items arts) p
+        (items (append (profile-items p) (list (cons item d)))))))
 
 ; ProgressionCore.removeItem
 (define (remove-item p item)
-  (make-profile (pr-credits p) (pr-affinity p)
-                (filter (lambda (e) (> (cdr e) 0))
-                        (map (lambda (e) (if (= (car e) item) (cons (car e) (- (cdr e) 1)) e)) (pr-items p)))
-                (pr-arts p)))
+  (record-with make-profile '(credits affinity items arts) p
+    (items (filter (lambda (e) (> (cdr e) 0))
+                    (map (lambda (e) (if (= (car e) item) (cons (car e) (- (cdr e) 1)) e)) (profile-items p))))))
 
 ; ProgressionCore.step - events are (list 'grant item), (list 'sell item price),
 ; (list 'buyArt art), or the bare symbol 'train.
@@ -69,19 +61,23 @@
      (let ((item (cadr event)) (price (caddr event)))
        (if (= (count-of p item) 0)
            (list p (list (list 'refusedNoItem item)))
-           (list (remove-item (make-profile (+ (pr-credits p) price) (pr-affinity p) (pr-items p) (pr-arts p)) item)
+           (list (remove-item (record-with make-profile '(credits affinity items arts) p
+                                 (credits (+ (profile-credits p) price)))
+                               item)
                  (list (list 'sold item price))))))
     ((and (pair? event) (eq? (car event) 'buyArt))
      (let ((art (cadr event)))
        (cond
-         ((member art (pr-arts p)) (list p (list (list 'refusedDup art))))
-         ((< (pr-affinity p) (art-affinity-req art)) (list p (list (list 'refusedGate art))))
-         ((< (pr-credits p) (art-cost art)) (list p (list (list 'refusedPoor art))))
-         (else (list (make-profile (- (pr-credits p) (art-cost art)) (pr-affinity p) (pr-items p) (append (pr-arts p) (list art)))
+         ((member art (profile-arts p)) (list p (list (list 'refusedDup art))))
+         ((< (profile-affinity p) (art-affinity-req art)) (list p (list (list 'refusedGate art))))
+         ((< (profile-credits p) (art-cost art)) (list p (list (list 'refusedPoor art))))
+         (else (list (record-with make-profile '(credits affinity items arts) p
+                       (credits (- (profile-credits p) (art-cost art)))
+                       (arts (append (profile-arts p) (list art))))
                      (list (list 'learned art)))))))
     ((eq? event 'train)
-     (let ((a (+ (pr-affinity p) 1)))
-       (list (make-profile (pr-credits p) a (pr-items p) (pr-arts p)) (list (list 'trained a)))))
+     (let ((a (+ (profile-affinity p) 1)))
+       (list (record-with make-profile '(credits affinity items arts) p (affinity a)) (list (list 'trained a)))))
     (else (list p '()))))
 
 ; ProgressionCore.replay

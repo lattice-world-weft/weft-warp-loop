@@ -12,17 +12,24 @@
 ; changes, this file is stale until re-ported by hand against the new
 ; commit - nothing here re-checks upstream automatically.
 ;
-; State is a Lean structure (6 UInt32/Bool fields); ported as a 6-slot
-; vector with named accessors rather than an assoc-list, so field
-; access is O(1) and typo'd field names fail loudly (vector-ref out of
-; range) rather than silently returning #f. Every `{ s with f := v }`
-; site becomes an explicit make-state call listing all six fields
-; (unchanged ones via the accessor, changed ones with the new value) -
-; verbose, but each site is directly checkable against its Lean source
-; line rather than trusting a generic field-updater helper.
+; Uses record-macros.scm's define-record/record-with (ADR 0034) instead
+; of hand-written vector reconstruction - each `{ s with f := v }` site
+; now names only what changed, matching the Lean source directly instead
+; of spelling out every unchanged field's accessor by hand. The quoted
+; field list is repeated at each record-with call site (unavoidable:
+; define-macro receives unevaluated syntax, so a variable holding the
+; field list wouldn't be visible at macro-expansion time) - a real,
+; accepted cost, still smaller than the boilerplate it replaces.
 ;
-; (State x List Effect) pairs are represented as 2-element lists
-; (list new-state effects), accessed via car/cadr.
+; No (load ...) here: the guest runs entirely inside libriscv's
+; fuel-metered VMCALL sandbox (resume/pause/gas-limit all come from
+; that boundary, per ADR 0006) - a guest-side (load "record-macros.scm")
+; would need a real filesystem syscall from inside the sandbox, outside
+; the gas-limited/marshaled call path entirely. record-macros.scm's
+; content is concatenated on the HOST side instead (same pattern
+; s7_riscv_*_golden_test.cpp already uses to assemble one big
+; expression string before the single VMCALL), never loaded by the
+; guest itself.
 
 (define combo-min-gap 6)
 (define combo-max-gap 18)
@@ -34,51 +41,50 @@
         ((= stage 1) 15)
         (else 25)))
 
-(define (make-state tick combo last-attack hp spawn alive)
-  (vector tick combo last-attack hp spawn alive))
-(define (st-tick s) (vector-ref s 0))
-(define (st-combo s) (vector-ref s 1))
-(define (st-last-attack s) (vector-ref s 2))
-(define (st-hp s) (vector-ref s 3))
-(define (st-spawn s) (vector-ref s 4))
-(define (st-alive s) (vector-ref s 5))
+(define-record state tick combo last-attack hp spawn alive)
 
 (define initial-state (make-state 0 0 0 0 0 #f))
 
 ; CombatCore.resolveSwing
 (define (resolve-swing s stage)
   (cond
-    ((not (st-alive s))
+    ((not (state-alive s))
      (list s (list (list 'swing stage))))
-    ((< (st-tick s) (+ (st-spawn s) invuln-ticks))
+    ((< (state-tick s) (+ (state-spawn s) invuln-ticks))
      (list s (list (list 'swing stage) 'blocked)))
     (else
      (let ((dmg (damage-of stage)))
-       (if (<= (st-hp s) dmg)
-           (list (make-state (st-tick s) (st-combo s) (st-last-attack s) 0 (st-spawn s) #f)
+       (if (<= (state-hp s) dmg)
+           (list (record-with make-state '(tick combo last-attack hp spawn alive) s (hp 0) (alive #f))
                  (list (list 'swing stage) (list 'hit dmg) 'death))
-           (list (make-state (st-tick s) (st-combo s) (st-last-attack s) (- (st-hp s) dmg) (st-spawn s) (st-alive s))
+           (list (record-with make-state '(tick combo last-attack hp spawn alive) s (hp (- (state-hp s) dmg)))
                  (list (list 'swing stage) (list 'hit dmg))))))))
 
 ; CombatCore.step
 (define (combat-step s event)
   (cond
     ((eq? event 'tick)
-     (let ((s1 (make-state (+ (st-tick s) 1) (st-combo s) (st-last-attack s) (st-hp s) (st-spawn s) (st-alive s))))
-       (if (and (> (st-combo s1) 0) (> (st-tick s1) (+ (st-last-attack s1) combo-max-gap)))
-           (list (make-state (st-tick s1) 0 (st-last-attack s1) (st-hp s1) (st-spawn s1) (st-alive s1)) (list 'comboDrop))
+     (let ((s1 (record-with make-state '(tick combo last-attack hp spawn alive) s (tick (+ (state-tick s) 1)))))
+       (if (and (> (state-combo s1) 0) (> (state-tick s1) (+ (state-last-attack s1) combo-max-gap)))
+           (list (record-with make-state '(tick combo last-attack hp spawn alive) s1 (combo 0)) (list 'comboDrop))
            (list s1 '()))))
     ((eq? event 'spawn)
-     (list (make-state (st-tick s) (st-combo s) (st-last-attack s) enemy-max-hp (st-tick s) #t) '()))
+     (list (record-with make-state '(tick combo last-attack hp spawn alive) s
+             (alive #t) (hp enemy-max-hp) (spawn (state-tick s)))
+           '()))
     ((eq? event 'attack)
-     (if (= (st-combo s) 0)
-         (resolve-swing (make-state (st-tick s) 1 (st-tick s) (st-hp s) (st-spawn s) (st-alive s)) 0)
-         (let ((gap (- (st-tick s) (st-last-attack s))))
+     (if (= (state-combo s) 0)
+         (resolve-swing (record-with make-state '(tick combo last-attack hp spawn alive) s
+                          (combo 1) (last-attack (state-tick s)))
+                        0)
+         (let ((gap (- (state-tick s) (state-last-attack s))))
            (if (and (<= combo-min-gap gap) (<= gap combo-max-gap))
-               (let* ((stage (st-combo s))
+               (let* ((stage (state-combo s))
                       (next (if (>= stage 2) 0 (+ stage 1))))
-                 (resolve-swing (make-state (st-tick s) next (st-tick s) (st-hp s) (st-spawn s) (st-alive s)) stage))
-               (list (make-state (st-tick s) 0 (st-last-attack s) (st-hp s) (st-spawn s) (st-alive s)) (list 'whiff))))))
+                 (resolve-swing (record-with make-state '(tick combo last-attack hp spawn alive) s
+                                  (combo next) (last-attack (state-tick s)))
+                                stage))
+               (list (record-with make-state '(tick combo last-attack hp spawn alive) s (combo 0)) (list 'whiff))))))
     (else (list s '()))))
 
 ; CombatCore.replay

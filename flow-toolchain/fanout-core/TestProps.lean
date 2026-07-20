@@ -220,6 +220,78 @@ def migrationLeavesOldZoneCheck (lens : List Nat) (connId idxA idxB : Nat) : Boo
       | some zoneA => !zoneA.entities.any (·.connId == connId.toUInt64)
   | _, _ => true
 
+/-- True iff `moveEntityToIndexHysteresisV`'s first placement (no prior
+    zone) lands the entity immediately, same as the non-hysteresis path -
+    vacuously true when `lens` is empty. -/
+def hysteresisFirstPlacementImmediateCheck (lens : List Nat) (connId idx : Nat) : Bool :=
+  let w := zoneWorldFromLengths 8 lens
+  if w.liveZones.size == 0 then true
+  else
+    let boundedIdx := idx.toUInt64 % (max w.totalSpan 1)
+    let w' := w.moveEntityToIndexHysteresisV connId.toUInt64 boundedIdx 0 0 0
+    match w'.authorityForIndex boundedIdx with
+    | none => false
+    | some zoneId =>
+      match w'.zones.find zoneId with
+      | none => false
+      | some zone => zone.entities.any (·.connId == connId.toUInt64)
+
+/-- True iff a sustained crossing toward a *different* zone stays with its
+    current zone for every call short of `hysteresisTicksFor
+    defaultLookaheadTicks`, then actually commits on the call that reaches
+    it - the real behaviour the mechanism exists for: a genuine, sustained
+    crossing still transfers authority within a bounded number of ticks,
+    not never. Vacuously true if either index has no authority zone, or
+    both land in the same zone (nothing to migrate). -/
+def hysteresisCommitsAfterStreakCheck (lens : List Nat) (connId idxA idxB : Nat) : Bool :=
+  let w := zoneWorldFromLengths 8 lens
+  let boundedA := idxA.toUInt64 % (max w.totalSpan 1)
+  let boundedB := idxB.toUInt64 % (max w.totalSpan 1)
+  let w1 := w.moveEntityToIndexHysteresisV connId.toUInt64 boundedA 0 0 0
+  match w1.authorityForIndex boundedA, w1.authorityForIndex boundedB with
+  | some zoneAId, some zoneBId =>
+    if zoneAId == zoneBId then true
+    else
+      let threshold := (hysteresisTicksFor defaultLookaheadTicks).toNat
+      let wPending := (List.range (threshold - 1)).foldl
+        (fun acc _ => acc.moveEntityToIndexHysteresisV connId.toUInt64 boundedB 0 0 0) w1
+      let stillInA :=
+        match wPending.zones.find zoneAId with
+        | some zoneA => zoneA.entities.any (·.connId == connId.toUInt64)
+        | none => false
+      let wCommitted := wPending.moveEntityToIndexHysteresisV connId.toUInt64 boundedB 0 0 0
+      let nowInB :=
+        match wCommitted.zones.find zoneBId with
+        | some zoneB => zoneB.entities.any (·.connId == connId.toUInt64)
+        | none => false
+      stillInA && nowInB
+  | _, _ => true
+
+/-- True iff an entity whose evaluated index keeps alternating between its
+    own current zone and a neighbour - boundary jitter, never a sustained
+    crossing - never migrates, no matter how many rounds of alternation:
+    every return to the current zone resets the streak to 0, so the
+    streak toward the neighbour never accumulates past 1. Vacuously true
+    if either index has no authority zone, or both land in the same zone. -/
+def hysteresisAbsorbsOscillationCheck (lens : List Nat) (connId idxA idxB rounds : Nat) : Bool :=
+  let w := zoneWorldFromLengths 8 lens
+  let boundedA := idxA.toUInt64 % (max w.totalSpan 1)
+  let boundedB := idxB.toUInt64 % (max w.totalSpan 1)
+  let w1 := w.moveEntityToIndexHysteresisV connId.toUInt64 boundedA 0 0 0
+  match w1.authorityForIndex boundedA, w1.authorityForIndex boundedB with
+  | some zoneAId, some zoneBId =>
+    if zoneAId == zoneBId then true
+    else
+      let n := rounds % 6
+      let wf := (List.range n).foldl
+        (fun acc i =>
+          acc.moveEntityToIndexHysteresisV connId.toUInt64 (if i % 2 == 0 then boundedB else boundedA) 0 0 0)
+        w1
+      match wf.zones.find zoneAId with
+      | some zoneA => zoneA.entities.any (·.connId == connId.toUInt64)
+      | none => false
+  | _, _ => true
+
 /-- True iff `targetsForIndex` never includes the publisher itself. -/
 def targetsExcludePublisherCheck (lens : List Nat) (connId idx : Nat) : Bool :=
   let w := zoneWorldFromLengths 8 lens
@@ -624,5 +696,26 @@ def main : IO Unit := do
      NamedBinder "tk" <| ∀ (tk : Nat),
      NamedBinder "extra" <| ∀ (extra : Nat),
       withinGhostRangeMonotoneInVelocityCheck px py pz pvx pvy pvz pk tx ty tz tvx tvy tvz tk extra = true) cfg
+
+  runCheck "moveEntityToIndexHysteresisV's first placement lands immediately"
+    (NamedBinder "lens" <| ∀ (lens : List Nat),
+     NamedBinder "connId" <| ∀ (connId : Nat),
+     NamedBinder "idx" <| ∀ (idx : Nat),
+      hysteresisFirstPlacementImmediateCheck lens connId idx = true) cfg
+
+  runCheck "moveEntityToIndexHysteresisV commits authority transfer once a crossing sustains for hysteresisTicksFor ticks"
+    (NamedBinder "lens" <| ∀ (lens : List Nat),
+     NamedBinder "connId" <| ∀ (connId : Nat),
+     NamedBinder "idxA" <| ∀ (idxA : Nat),
+     NamedBinder "idxB" <| ∀ (idxB : Nat),
+      hysteresisCommitsAfterStreakCheck lens connId idxA idxB = true) cfg
+
+  runCheck "moveEntityToIndexHysteresisV absorbs boundary oscillation without ever migrating"
+    (NamedBinder "lens" <| ∀ (lens : List Nat),
+     NamedBinder "connId" <| ∀ (connId : Nat),
+     NamedBinder "idxA" <| ∀ (idxA : Nat),
+     NamedBinder "idxB" <| ∀ (idxB : Nat),
+     NamedBinder "rounds" <| ∀ (rounds : Nat),
+      hysteresisAbsorbsOscillationCheck lens connId idxA idxB rounds = true) cfg
 
   IO.println "ALL PROPERTY TESTS PASSED"

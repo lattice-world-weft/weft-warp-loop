@@ -132,6 +132,34 @@ def ghostExpansion (v aHalf k : UInt64) : UInt64 :=
     one constant once that measurement exists. -/
 def defaultLookaheadTicks : UInt64 := 6
 
+/-- Consecutive ticks a boundary-crossing entity's curve index must
+    consistently point at the *same* neighbouring zone before authority
+    actually transfers - `AuthorityInterest.lean`'s `hysteresisThreshold`,
+    applied to curve-index authority: without this, an entity moving
+    exactly along a zone boundary (a real, common case - players hugging
+    a wall that happens to sit on a partition line, or simple floating-
+    point/quantization jitter at rest near one) would migrate every single
+    tick it's evaluated, thrashing zone membership and the fanout targets
+    computed from it.
+
+    Not a fixed constant (the same mistake `defaultLookaheadTicks` was
+    originally written as, and corrected for the same reason): how many
+    ticks a single stray/jittery position sample can plausibly span
+    depends on how often this entity's position actually updates, which
+    is exactly what `EntityRecord.lookaheadTicks` (RTT-derived) already
+    measures. A high-RTT entity's samples arrive less often, so a single
+    jitter event can look like it "persists" across more evaluated ticks
+    than a low-RTT entity's would - it needs a longer streak to tell a
+    real crossing from one stale sample. Half the entity's own lookahead
+    window, floored at 1 tick: long enough to absorb a single stray
+    sample, short enough that a genuine crossing still commits well
+    within that same entity's own ghost horizon (`withinGhostRange`
+    already projects `lookaheadTicks` ahead of the actual crossing, so
+    committing authority in under that many ticks keeps the receiving
+    zone's ghost coverage ahead of, not behind, the transfer). -/
+def hysteresisTicksFor (lookaheadTicks : UInt64) : UInt64 :=
+  max 1 (lookaheadTicks / 2)
+
 /-- Per-axis absolute distance between two signed micrometer coordinates. -/
 def axisDist (a b : Int64) : UInt64 :=
   if a >= b then (a - b).toUInt64 else (b - a).toUInt64
@@ -229,6 +257,24 @@ structure EntityRecord where
   vy       : UInt64 := 0
   vz       : UInt64 := 0
   rttTicks : UInt64 := 0
+  /-- The zone id this entity's `idx` currently points at, when that
+      differs from the zone actually simulating it (`none` while the
+      entity's `idx` still agrees with its own current zone) -
+      `AuthorityInterest.lean`'s `MigrationState` staging concept, sized
+      down to just "which candidate, if any": an entity oscillating on a
+      boundary keeps resetting this to the *same* candidate zone (streak
+      keeps counting), while one that crosses back and forth between two
+      different neighbours resets the streak from scratch each time it
+      changes its mind (see `migrationStreak`). -/
+  pendingZone : Option Id := none
+  /-- Consecutive `moveEntityToIndexHysteresisV` calls in a row where the
+      entity's `idx` has pointed at `pendingZone` without reverting to its
+      current zone or flipping to a third candidate. Authority transfer
+      only commits once this reaches `hysteresisThreshold` -
+      `AuthorityInterest.lean`'s `hysteresisThreshold`, applied here to
+      curve-index authority instead of that project's AABB-overlap
+      authority. -/
+  migrationStreak : UInt64 := 0
   deriving Repr, BEq, Inhabited
 
 /-- `rec.rttTicks`, or `defaultLookaheadTicks` if no RTT sample is known

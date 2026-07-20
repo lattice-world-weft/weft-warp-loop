@@ -159,6 +159,89 @@ def ZoneWorld.moveEntityV (w : ZoneWorld) (connId : UInt64) (pos : Pos3) (vx vy 
 def ZoneWorld.moveEntity (w : ZoneWorld) (connId : UInt64) (pos : Pos3) : ZoneWorld :=
   w.moveEntityToIndex connId (hilbert3D w.bits pos)
 
+/-- `moveEntityToIndexV`'s hysteresis-gated counterpart
+    (`AuthorityInterest.lean`'s `MigrationState`, sized down to a single
+    streak counter - see `EntityRecord.pendingZone`/`migrationStreak`):
+    first placement (the entity has no current zone) transfers
+    immediately, same as `moveEntityToIndexV` - hysteresis only guards
+    *transfer between two zones*, not initial authority assignment, since
+    there is no "old owner" whose stability a first placement could
+    disrupt. When `idx` still lands in the entity's current zone, its
+    record updates in place (fresh pos/velocity/RTT) and the streak resets
+    to 0 - back inside the zone's own range is not "closer to migrating,"
+    it's "not migrating." When `idx` lands in a *different* zone: if that
+    zone is the same one the entity was already streaking toward, the
+    streak increments; if it's a third zone (the entity changed direction
+    mid-crossing) or the entity had no streak yet, the streak resets to 1
+    for this new candidate. Only once the streak reaches the entity's own
+    `hysteresisTicksFor` threshold - computed fresh from its *current*
+    `lookaheadTicks` on every call, not a value fixed at first placement
+    and never revisited, so a connection's RTT improving or degrading
+    mid-session immediately changes how many ticks its own crossings need
+    to confirm, matching how `withinGhostRange` already always reads the
+    live `lookaheadTicks` rather than a value cached at subscribe time -
+    does authority actually move. Below that, the entity's `idx`/
+    position/velocity still update (so ghost-range checks against it stay
+    accurate even while it's mid-crossing) but it remains simulated by
+    its current zone: absorb boundary jitter without thrashing zone
+    membership, while a genuine, sustained crossing still commits within
+    that many ticks. -/
+def ZoneWorld.moveEntityToIndexHysteresisV (w : ZoneWorld) (connId idx vx vy vz : UInt64) (rttTicks : UInt64 := 0) (pos : Pos3 := { x := 0, y := 0, z := 0 }) : ZoneWorld := Id.run do
+  let mut currentZoneId : Option Id := none
+  for (id, zone) in w.liveZones do
+    if zone.entities.any (·.connId == connId) then
+      currentZoneId := some id
+  match w.authorityForIndex idx with
+  | none =>
+    -- No zone owns this index (e.g. an unassigned gap) - drop the entity
+    -- from wherever it was, matching moveEntityToIndexV's own behaviour.
+    match currentZoneId with
+    | none => return w
+    | some zid =>
+      match w.zones.find zid with
+      | none => return w
+      | some zone => return { w with zones := w.zones.update zid (zone.unsub connId) }
+  | some targetZoneId =>
+    match currentZoneId with
+    | none =>
+      -- First placement: no prior owner to protect, transfer immediately.
+      match w.zones.find targetZoneId with
+      | none => return w
+      | some zone =>
+        return { w with zones := w.zones.update targetZoneId (zone.sub
+          { connId, idx, pos, vx, vy, vz, rttTicks, pendingZone := none, migrationStreak := 0 }) }
+    | some curZoneId =>
+      match w.zones.find curZoneId with
+      | none => return w
+      | some curZone =>
+        let oldRec := (curZone.entities.find? (·.connId == connId)).getD
+          { connId, idx, pos, vx, vy, vz, rttTicks }
+        if curZoneId == targetZoneId then
+          let curZone' := curZone.unsub connId
+          let curZone'' := curZone'.sub
+            { connId, idx, pos, vx, vy, vz, rttTicks, pendingZone := none, migrationStreak := 0 }
+          return { w with zones := w.zones.update curZoneId curZone'' }
+        else
+          let streak := if oldRec.pendingZone == some targetZoneId then oldRec.migrationStreak + 1 else 1
+          -- Recompute from the *new* rttTicks this call carries, not
+          -- oldRec's - a fresher RTT sample should govern immediately.
+          let newRecForLookahead : EntityRecord := { connId, idx, pos, vx, vy, vz, rttTicks }
+          let threshold := hysteresisTicksFor newRecForLookahead.lookaheadTicks
+          if streak >= threshold then
+            match w.zones.find targetZoneId with
+            | none => return w
+            | some targetZone =>
+              let curZone' := curZone.unsub connId
+              let targetZone' := targetZone.sub
+                { connId, idx, pos, vx, vy, vz, rttTicks, pendingZone := none, migrationStreak := 0 }
+              let zones := (w.zones.update curZoneId curZone').update targetZoneId targetZone'
+              return { w with zones := zones }
+          else
+            let curZone' := curZone.unsub connId
+            let curZone'' := curZone'.sub
+              { connId, idx, pos, vx, vy, vz, rttTicks, pendingZone := some targetZoneId, migrationStreak := streak }
+            return { w with zones := w.zones.update curZoneId curZone'' }
+
 /-- Removes `connId`'s entity from whichever zone it was in, if any -
     mirrors `Room.unsub`, called when a connection disconnects. -/
 def ZoneWorld.removeEntity (w : ZoneWorld) (connId : UInt64) : ZoneWorld := Id.run do

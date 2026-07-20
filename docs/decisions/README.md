@@ -48,3 +48,4 @@ weft-warp-loop stack. One decision per file, numbered in acceptance order.
 - [0043 — Taskweft port Layer 5: WitnessDAG.lean confirmed non-portable, skipped (superseded by 0045)](0043-taskweft-layer5-witnessdag-non-portable.md)
 - [0044 — Shrubbery source rejects raw parenthesized top-level statements](0044-shrubbery-rejects-raw-toplevel-parens.md)
 - [0045 — Taskweft port Layer 5 complete: WitnessDAG.lean ported via a minimal own QuickCheck-style fuzzer](0045-taskweft-layer5-witnessdag-ported-via-own-fuzzer.md)
+- [0046 — Taskweft port Layer 6 complete: integration, and no real fusion of goals+ReBAC+temporal exists to copy](0046-taskweft-layer6-integration-complete.md)

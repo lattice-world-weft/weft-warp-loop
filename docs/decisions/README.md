@@ -37,3 +37,4 @@ weft-warp-loop stack. One decision per file, numbered in acceptance order.
 - [0032 — One source of truth: no duplicated copies of upstream repos' source](0032-one-source-of-truth-no-duplicated-upstream-copies.md)
 - [0033 — A minimal shrubbery-lite reader, as an offline preprocessor, closes ADR 0006's unstarted item](0033-shrubbery-lite-reader-offline-preprocessor.md)
 - [0034 — define-record/record-with macros replace hand-written vector-reconstruction boilerplate](0034-record-macros-for-immutable-update-boilerplate.md)
+- [0035 — taskweft's HTN forward-decomposition core, ported to shrubbery, verified against a real domain](0035-taskweft-lite-htn-forward-decomposition-ported-to-shrubbery.md)

@@ -6,12 +6,20 @@ Proposed (design record only; no code changes accompany this ADR).
 
 ## Decision
 
+**Correction (2026-07-20):** this ADR originally claimed
+`flow-toolchain/examples/taskweft-lite.scm` "already implements and
+tests against `plan/bootstrap-domain.json`." No such file exists
+anywhere in this repo, and never did — a stale/incorrect claim, caught
+while actually building it (see
+[ADR 0035](0035-taskweft-lite-htn-forward-decomposition-ported-to-shrubbery.md)
+for the real port). Item 1 below is corrected accordingly.
+
 Four further uses of the s7/shrubbery pair came up in the same session
 as [ADR 0006](0006-libriscv-sandboxed-s7-lisp-over-native-janet.md), each
 scoped here rather than implemented: (1) reimplementing `taskweft`'s
 full feature set (temporal reasoning, ReBAC+fuel graph checks, HRR
-semantic-memory encoding) beyond what `taskweft-lite.scm`'s HTN
-forward-decomposition core already covers; (2) exposing a bounded
+semantic-memory encoding) beyond the HTN forward-decomposition core
+(now real, ADR 0035); (2) exposing a bounded
 s7/libriscv VMCALL as an Elixir NIF via `elixir-nx/fine`, for comparison
 against `taskweft/nif`'s own C++20 NIF — compatible with this repo's
 existing "no indefinitely-running loop inside the BEAM VM" constraint,

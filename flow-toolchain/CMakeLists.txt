@@ -440,6 +440,15 @@ add_executable(s7_riscv_macro_test
 target_include_directories(s7_riscv_macro_test PRIVATE examples)
 target_link_libraries(s7_riscv_macro_test PRIVATE riscv)
 
+# --- s7_riscv_taskweft_lite_golden_test: golden-vector proof for
+# taskweft-lite.shrub's find-plan (HTN forward-decomposition core), against
+# this repo's own real plan/bootstrap-domain.json content.
+add_executable(s7_riscv_taskweft_lite_golden_test
+  examples/s7_riscv_taskweft_lite_golden_test.cpp
+  examples/s7_riscv_core.cpp)
+target_include_directories(s7_riscv_taskweft_lite_golden_test PRIVATE examples)
+target_link_libraries(s7_riscv_taskweft_lite_golden_test PRIVATE riscv)
+
 # --- s7_riscv_actor_test: a real Flow actor (s7_riscv_actor.actor.cpp)
 # calling into the libriscv-sandboxed s7 guest (riscv-guests/s7_guest.elf,
 # built from riscv-guests/s7_guest_main.c - see riscv-guests/README.md for

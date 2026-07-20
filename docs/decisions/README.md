@@ -38,3 +38,4 @@ weft-warp-loop stack. One decision per file, numbered in acceptance order.
 - [0033 — A minimal shrubbery-lite reader, as an offline preprocessor, closes ADR 0006's unstarted item](0033-shrubbery-lite-reader-offline-preprocessor.md)
 - [0034 — define-record/record-with macros replace hand-written vector-reconstruction boilerplate](0034-record-macros-for-immutable-update-boilerplate.md)
 - [0035 — taskweft's HTN forward-decomposition core, ported to shrubbery, verified against a real domain](0035-taskweft-lite-htn-forward-decomposition-ported-to-shrubbery.md)
+- [0036 — Taskweft port Layer 0: Types.lean's SolutionTree/e-graph model, not the simpler find_plan doc account](0036-taskweft-layer0-types-solutiontree-egraph-model.md)

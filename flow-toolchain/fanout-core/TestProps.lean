@@ -564,6 +564,26 @@ def mergeKeepsRangesDisjointCheck (depth : Nat) (conns idxs : List Nat) : Bool :
       let w' := w.maybeMergeSiblings firstId
       disjointRanges (w'.liveZones.map fun (_, z) => z.range)
 
+/-- True iff `maybeMergeSiblings` actually performs a merge when merging
+    is genuinely cost-favourable - a real gap the two checks above never
+    caught: they only assert invariants *if* a merge happens, vacuously
+    satisfied when no merge happens at all, so they never proved a merge
+    ever actually fires. One entity spread across 8 otherwise-empty
+    siblings (`mergeSetup depth [conn] [0]`) is unambiguous: leafCost 1 =
+    1 is strictly less than the 8-way splitCost (`leafCost 1 + zoneOverhead
+    = 2` for the one occupied child, `leafCost 0 + zoneOverhead = 1` each
+    for the other 7 - 9 total), so merging must be the cheaper choice and
+    a real merge (8 live zones down to 1) must happen. -/
+def mergeActuallyMergesWhenCheaperCheck (depth : Nat) (conn : Nat) : Bool :=
+  match mergeSetup depth [conn] [0] with
+  | none => true
+  | some w =>
+    match w.liveZones[0]? with
+    | none => true
+    | some (firstId, _) =>
+      let w' := w.maybeMergeSiblings firstId
+      w'.liveZones.size < w.liveZones.size
+
 /-- True iff `withinGhostRange` is symmetric in its two entities: whether
     A could reach B doesn't depend on which one is labelled "publisher" -
     `axisDist` is itself symmetric and each side's ghost expansion is
@@ -760,6 +780,11 @@ def main : IO Unit := do
      NamedBinder "conns" <| ∀ (conns : List Nat),
      NamedBinder "idxs" <| ∀ (idxs : List Nat),
       mergeKeepsRangesDisjointCheck depth conns idxs = true) cfg
+
+  runCheck "maybeMergeSiblings actually merges when merging is cheaper than staying split"
+    (NamedBinder "depth" <| ∀ (depth : Nat),
+     NamedBinder "conn" <| ∀ (conn : Nat),
+      mergeActuallyMergesWhenCheaperCheck depth conn = true) cfg
 
   runCheck "withinGhostRange is symmetric in its two entities"
     (NamedBinder "px" <| ∀ (px : Nat), NamedBinder "py" <| ∀ (py : Nat), NamedBinder "pz" <| ∀ (pz : Nat),

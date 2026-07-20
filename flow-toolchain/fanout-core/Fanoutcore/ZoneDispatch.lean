@@ -398,7 +398,27 @@ def ZoneWorld.maybeMergeSiblings (w : ZoneWorld) (zoneId : Id) : ZoneWorld :=
                   totalPop := totalPop + szone.entities.size
           let childPops := children.map fun c =>
             (allEntities.filter fun rec => c.contains rec.idx).size
-          if !splitIsCheaper totalPop childPops then return w
+          -- Merge iff staying split is *not* the cheaper choice (the
+          -- opposite polarity from maybeSplitZone's own check, by
+          -- construction: `splitIsCheaper` asks "is splitting cheaper
+          -- than merged?", so merging is the right call exactly when
+          -- that answer is no) - a real bug, found and fixed by
+          -- `mergeActuallyMergesWhenCheaperCheck` in TestProps.lean:
+          -- an earlier version used the same `!splitIsCheaper then
+          -- return w else <merge>` shape as maybeSplitZone verbatim,
+          -- which merges when splitting is cheaper and refuses to merge
+          -- when merging is cheaper - inverted from the intent this
+          -- function's own doc comment describes, and never caught
+          -- because the other merge property tests only assert
+          -- invariants *if* a merge happens, vacuously true when one
+          -- never does. Also refuses outright once `totalPop` would
+          -- exceed `authorityCapacity`, even when merging is otherwise
+          -- cheaper - checked before touching any zone, not discovered
+          -- via `Zone.sub` silently dropping the entities that don't
+          -- fit (the same class of vanish bug `moveEntityToIndexV`'s
+          -- own capacity check exists to avoid).
+          if splitIsCheaper totalPop childPops then return w
+          else if totalPop > authorityCapacity then return w
           else
             let mut w := w
             for sid in siblingIds do

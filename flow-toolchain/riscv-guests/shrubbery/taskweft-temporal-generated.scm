@@ -1,0 +1,7 @@
+(define (find-idx-loop pred lst i) (cond ((null? lst) i) ((pred (car lst)) i) (else (find-idx-loop pred (cdr lst) (+ i 1)))))
+(define (find-idx pred lst) (find-idx-loop pred lst 0))
+(define (find-first pred lst) (cond ((null? lst) #f) ((pred (car lst)) (car lst)) (else (find-first pred (cdr lst)))))
+(define (list-all pred lst) (cond ((null? lst) #t) ((pred (car lst)) (list-all pred (cdr lst))) (else #f)))
+(define (occurs-before a b stn) (let* ((i (find-idx (lambda (x) (equal? x a)) stn)) (j (find-idx (lambda (x) (equal? x b)) stn)) (len (length stn))) (and (< i j) (< j len) (< i len))))
+(define (temporal-constraint-valid stn metas c) (let* ((tag (car c))) (cond ((equal? tag 'after) (occurs-before (car (cdr (cdr c))) (car (cdr c)) stn)) ((equal? tag 'before) (occurs-before (car (cdr c)) (car (cdr (cdr c))) stn)) ((equal? tag 'between) (let* ((a (car (cdr c))) (b (car (cdr (cdr c)))) (c-id (car (cdr (cdr (cdr c)))))) (and (occurs-before b a stn) (occurs-before a c-id stn)))) ((equal? tag 'within) (let* ((a (car (cdr c))) (t (car (cdr (cdr c)))) (m (find-first (lambda (mm) (equal? (car mm) a)) metas))) (cond (m (and (if (member a stn) #t #f) (<= (caddr m) t))) (else #f)))))))
+(define (all-constraints-satisfied stn metas cs) (list-all (lambda (c) (temporal-constraint-valid stn metas c)) cs))

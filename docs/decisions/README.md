@@ -42,3 +42,4 @@ weft-warp-loop stack. One decision per file, numbered in acceptance order.
 - [0037 — The shrubbery reader itself ported to s7, verified against the Python version's own output](0037-shrubbery-reader-ported-to-s7-verified-against-python.md)
 - [0038 — Taskweft port Layer 1 complete: planner core, MultiGoalDecomposition confirmed empty](0038-taskweft-layer1-planner-core-complete.md)
 - [0039 — Taskweft port Layer 2 complete: ReBAC (Capabilities, FloydWarshall, ReBACGoal)](0039-taskweft-layer2-rebac-complete.md)
+- [0040 — Taskweft port Layer 3a complete: Temporal.lean](0040-taskweft-layer3a-temporal-complete.md)

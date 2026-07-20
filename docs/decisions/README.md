@@ -13,4 +13,7 @@ weft-warp-loop stack. One decision per file, numbered in acceptance order.
 - [0008 — Adopt mas-bandwidth-scale player/world-server constants and the fabric's interest/authority model](0008-fiedler-scale-constants-and-fabric-interest-authority.md)
 - [0009 — Reserved witness zones for cross-machine zone-authority leases, over full Multi-Raft/parallel-commits](0009-reserved-witness-zones-for-cross-machine-lease-authority.md)
 - [0010 — Godot as an interest-bounded thin presentation client, over patching Godot's core engine in place](0010-godot-thin-client-interest-bounded-over-in-place-patches.md)
-- [0011 — Standardize the sandboxed deterministic-content language on s7 Scheme (Lisp-1), over GDScript, taskweft's own DSL, or a freestanding Lean4 port](0011-standardize-sandboxed-scripting-on-s7-lisp1.md)
+- [0011 — Standardize sandboxed content execution on s7 Scheme (Lisp-1)](0011-standardize-sandboxed-scripting-on-s7-lisp1.md)
+- [0012 — Lean4 as a verification front end for s7 content, ported through s7_riscv_actor](0012-lean4-verification-front-end-ported-to-s7.md)
+- [0013 — Mechanize the Lean4-to-s7 port via a staged compiler, guided by godot-sandbox-gdscript-compiler's pipeline shape](0013-mechanize-lean4-to-s7-port-via-gdscript-compiler-shape.md)
+- [0014 — AOT-compile Scheme content to RISC-V machine code, not interpret it via s7's runtime](0014-aot-compile-scheme-content-to-riscv-not-interpret.md)

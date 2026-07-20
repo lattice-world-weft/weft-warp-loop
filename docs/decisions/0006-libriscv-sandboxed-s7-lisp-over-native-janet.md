@@ -2,265 +2,91 @@
 
 ## Status
 
-Accepted (a future PR; not yet fully implemented). Implementation status:
+Accepted; large parts have since shipped — see "Implementation status"
+below, current as of this rewrite.
 
-- Done: libriscv v1.18 vendored (`flow-toolchain/thirdparty/libriscv`),
-  wired into the CMake build as the `riscv` target, with a host-side
-  smoke test (`flow-toolchain/examples/libriscv_vendor_test.cpp`,
-  covered by CI in `flow-runtime.yml`) that verifies both properties this
-  ADR depends on against the vendored code: fuel metering actually bounds
-  execution, and repeated runs of the same guest produce identical
-  instruction counts and return values.
-- Done: s7 vendored (`flow-toolchain/thirdparty/s7`, pinned to a specific
-  upstream commit — no tagged releases exist to pin to instead).
-- Done: the libc question is resolved — not hand-built, not musl.
-  A real newlib toolchain (xPack's prebuilt `riscv-none-elf-gcc`,
-  https://github.com/xpack-dev-tools/riscv-none-elf-gcc-xpack) compiles
-  `s7.c` cleanly for RISC-V with two flags (`-DWITH_C_LOADER=0
-  -DWITH_SYSTEM_EXTRAS=0`, both config macros `s7.c` itself defaults on
-  for any non-MSVC compiler, pulling in `dlfcn.h`/`dirent.h` newlib
-  doesn't provide freestanding). `flow-toolchain/thirdparty/s7/
-  MINIMAL_LIBC_SCOPE.md`'s earlier hand-built-libc scoping work is
-  superseded by this — recorded there as history, not the live plan.
-- Done: **s7 actually runs inside libriscv.** `flow-toolchain/
-  riscv-guests/s7_guest.elf` (`s7.c` + `riscv-guests/s7_guest_main.c`)
-  evaluates real Scheme expressions correctly inside the vendored
-  sandbox — verified values, not just "it linked": `(+ 1 2 3)` → `6`,
-  `(* 6 7)` → `42`, string and loop expressions correct too. Two real
-  bugs found and fixed getting here, both recorded in `riscv-guests/
-  README.md`: `RISCV_BRK_MEMORY_SIZE`'s 1MB default is nowhere near
-  enough for `s7_init()`'s own heap needs (raised to 128MB on the
-  `riscv` CMake target), and libriscv's `Memory` keeps a non-owning
-  `std::string_view` over the guest ELF bytes, not a copy — a
-  function-local buffer in the first version of the host wrapper went
-  out of scope before later `vmcall`s used it.
-- Done: the VMCALL boundary and fuel metering both work and are proven
-  deterministic — not just designed. `guest_eval` is called through
-  libriscv's documented VMCALL pattern; two independent `Machine`
-  instances given the identical call sequence produce byte-identical
-  instruction counts every time (270,311, repeatable, checked over
-  several runs). `flow-toolchain/examples/riscv_guest_host_interface.md`
-  is now a description of what's built, not a proposal — the syscall
-  allowlist narrowing (default-deny beyond `setup_linux_syscalls()`'s
-  full surface) is the one piece in that doc still ahead of the code.
-- Done: **called from a real Flow actor, not just a bare host loop.**
-  `flow-toolchain/examples/s7_riscv_actor.actor.cpp` is a genuine
-  `ACTOR`, transformed by the vendored actor-compiler, linked against
-  the real `flow.lib` (Boost/OpenSSL, this repo's actual build, not a
-  scratch stand-in) — `s7_riscv_actor_test.cpp` drives it twice, against
-  two independently-initialized libriscv Machines, and confirms
-  identical total fuel cost through the actor both times. This is the
-  concrete answer to "is libriscv's gas/sandbox model compatible with
-  Flow's deterministic replay": yes, verified, not just argued.
-- Reversed: the native-host devtool tier (a separate unsandboxed s7
-  build for REPL-style access, ADR 0006's original item 10) was built
-  this session, then deliberately deleted once the sandboxed path above
-  was proven working — "direct s7 access" was a stepping stone, not the
-  destination. s7 now has exactly one execution path: inside libriscv.
-- Open, unresolved: the fuel budget per call site. This repo's Flow
-  runtime has no existing fixed-tick/timestep concept to size a budget
-  against (`flow-toolchain/flow/` is a pure event-driven actor runtime,
-  not a fixed-timestep loop) — sizing this needs a product decision
-  (how expensive a single scripted decision is allowed to be), not
-  something derivable from the codebase as it stands. The proof above
-  uses a fixed 2,000,000-instruction ceiling per call as a placeholder,
-  not a sized answer to this question.
-- Not started: the shrubbery-style reader (the guest takes plain s7
-  s-expression text today), narrowing the syscall table to the
-  documented default-deny design (the guest currently gets the full
-  `setup_linux_syscalls()` surface, not the `exit`-only allowlist
-  `riscv_guest_host_interface.md` calls for), and the FP-stress
-  byte-compare re-verification (ADR 0004's precedent) against real
-  scripted content once any exists beyond arithmetic/string smoke tests.
+## Decision
 
-## Context and Problem Statement
+No embedded scripting language existed anywhere in this stack —
+everything non-Lean4 was external-process orchestration. Flow's
+determinism contract (every peer replays byte-for-byte identically) is
+why `fanout-core`/`sketch-core` live in Lean4 rather than hand-written
+C++. Janet, a single-file-embeddable Lisp-1, was the first candidate for
+a native scripting layer beside Flow, but its execution model (native
+floats, dynamic hashtables, no bit-identity guarantee) sits outside the
+replay contract the way any native runtime would — confining it to
+non-replicated work (dev/debug REPL tooling), not the
+determinism-critical path. libriscv, an embeddable RISC-V CPU emulator,
+changes this: it runs compiled RISC-V ELF binaries against a fixed,
+software-float instruction set, so the same guest binary produces the
+same execution trace regardless of host CPU/OS — a property that
+matches Flow's replay needs and puts a *sandboxed guest* language on the
+determinism-critical path itself, not just beside it.
 
-No embedded scripting language exists anywhere in this stack. Everything
-non-Lean4 is external-process orchestration: `scripts/test_local.sh`
-(bash), the Python E2E tests (`pixi` + `aioquic`), and the vendored
-FoundationDB Python actor-compiler (build-time codegen). Flow's
-determinism contract — every peer replays byte-for-byte identically from
-the same simulated network/clock/RNG input — is why `fanout-core`'s
-dispatch and `sketch-core`'s convergence graph live in Lean4 rather than
-hand-written C++, and why ADR 0003 flags the vendored beautify solver as
-a determinism-sensitive addition requiring its own byte-compare gate.
+Chosen: libriscv embeds in Flow as the execution substrate, and s7
+Scheme (a Lisp-1, single portable C file, proven in real-time embedding
+contexts like Snd/CLM) compiles to RISC-V as the guest language,
+authored in shrubbery notation (an indentation-based reader in front of
+s7's s-expressions — no visible parentheses to the script author, still
+a Lisp-1 underneath). A Flow actor calls guest functions via libriscv's
+VMCALL pattern, under `machine.simulate(max_instructions)` fuel metering
+and an explicit per-syscall allowlist — the same call shape
+`fanout-core`'s exported FFI already uses. Lean4's scope is unchanged:
+`fanout-core`/`sketch-core`/the beautify solver stay the proof-verified
+kernel; s7-on-libriscv is an additional tier underneath it for content
+that changes too often to prove every time (mission scripts, loot
+tables, NPC behavior).
 
-A first framing of this question asked whether Janet
-(https://github.com/janet-lang/janet), a Lisp-1 distributed as a single
-amalgamated `janet.c`/`janet.h`, fits as a scripting layer running
-natively alongside the Flow process, with Lean4 kept for verification.
-Janet's own execution model — a native-code interpreter with host
-floating point, dynamic hashtables, and no documented cross-platform
-bit-identity guarantee — sits outside Flow's replay-determinism
-contract the same way any other native scripting runtime would. That
-framing confines Janet to work that never touches replicated game state:
-dev/debug REPL tooling against the fanout/sketch FFI, and the
-cert-minting script ADR 0002 calls for.
+Rejected: Janet-as-guest (its fibers/event-loop/socket-I/O assume
+language-owned scheduling, needing stripping for a freestanding build —
+s7 carries none of that to remove); AtomVM/BEAM-Lisp (BEAM's
+scheduler/GC/float carry no bit-identical-replay guarantee, so it
+wouldn't move any workload onto the determinism-critical path);
+Racket/Rhombus-as-guest (Rhombus is a surface syntax on the full
+Racket/Chez runtime, no static-linking-into-a-minimal-freestanding-binary
+story the way s7 and Janet both have). Shrubbery notation itself is
+separable from Rhombus/Racket — its own docs describe it as "leaving
+further parsing to another layer" — so adopting it as s7's surface
+syntax costs nothing against the freestanding-build goal that ruled
+Racket out.
 
-libriscv (https://github.com/libriscv/libriscv), an embeddable RISC-V
-CPU emulator, changes the shape of the question. It runs compiled RISC-V
-ELF binaries inside a host process through a C++17 API
-(`Machine<RISCV64>`), and because it emulates a fixed instruction set —
-including software floating point per the RISC-V spec — instead of
-running host-native machine code, the same guest binary produces the
-same execution trace regardless of host CPU or OS. That property matches
-what Flow's replay already needs. A scripting language running as a
-libriscv guest, rather than natively, becomes a candidate for the
-determinism-critical path itself, not only for dev tooling beside it —
-provided the guest language is a Lisp-1 with a small enough footprint to
-fit a sandboxed, fuel-bounded call boundary well.
+### Implementation status
 
-## Decision Drivers
+- Done: libriscv v1.18 vendored and wired into CMake, with a host-side
+  smoke test proving fuel metering bounds execution and repeated runs
+  produce identical instruction counts.
+- Done: s7 vendored; a real newlib toolchain (xPack `riscv-none-elf-gcc`)
+  compiles it cleanly for RISC-V — no hand-built libc, no musl.
+- Done: s7 actually runs inside libriscv, verified against real
+  evaluated values, not just "it linked."
+- Done: the VMCALL boundary and fuel metering are proven deterministic —
+  two independent `Machine` instances given the same call sequence
+  produce byte-identical instruction counts, repeatably.
+- Done: called from a real Flow actor (`s7_riscv_actor.actor.cpp`),
+  transformed by the vendored actor-compiler, linked against the real
+  `flow.lib` — confirms libriscv's sandbox model is compatible with
+  Flow's deterministic replay.
+- Reversed: a separate native-host s7 devtool tier was built, then
+  deleted once the sandboxed path was proven — s7 now has exactly one
+  execution path, inside libriscv.
+- Open: the fuel budget per call site has no sizing basis yet (Flow has
+  no fixed-tick concept to size against) — a 2,000,000-instruction
+  ceiling is a placeholder, not a sized answer.
+- Not started: the shrubbery-style reader (the guest still takes plain
+  s7 s-expression text), narrowing the syscall table to default-deny
+  (the guest currently gets the full Linux syscall surface, not an
+  `exit`-only allowlist), and FP-stress byte-compare re-verification
+  against real scripted content once any exists beyond arithmetic/string
+  smoke tests.
 
-- Reproducibility: any scripted content that touches replicated
-  simulation state needs the same bit-identical-replay guarantee
-  `fanout-core`/`sketch-core` already carry, matching ADR 0004's stance
-  that determinism only needs the approximation to be identical across
-  peers, not exact.
-- Performance and a bounded, predictable cost per call — libriscv's
-  `machine.simulate(max_instructions)` fuel metering caps worst-case
-  compute per call with an instruction-count ceiling that produces the
-  same count on every peer.
-- Sandbox isolation matching the repo's existing "the C++ host owns all
-  I/O" rule: a libriscv guest has no syscalls unless the host installs a
-  handler for that specific syscall number, a stricter boundary than
-  `fanout-core`'s plain FFI draws today.
-- A Lisp-1 specifically (single namespace for functions and values, as
-  opposed to a Lisp-2 like Common Lisp or Emacs Lisp).
-- Surface syntax: scripted content is authored in shrubbery notation's
-  indentation-based grouping, not visible parenthesized s-expressions,
-  while the language underneath stays a Lisp-1 - the parenthesized form
-  is an implementation detail of the reader, not something a script
-  author sees.
-- License compatibility with the repo's no-GPL/AGPL constraint.
+## Consequences
 
-## Considered Options
-
-1. Janet running natively beside Flow, Lean4 unchanged.
-2. libriscv embedded in Flow, Janet compiled to RISC-V as the guest
-   language.
-3. libriscv embedded in Flow, s7 Scheme compiled to RISC-V as the guest
-   language.
-4. AtomVM (https://github.com/atomvm/atomvm), a from-scratch minimal BEAM
-   implementation for constrained hardware, paired with a Lisp-1 BEAM
-   language.
-5. libriscv embedded in Flow, Racket compiled to RISC-V as the guest
-   language, authored in Rhombus (https://docs.racket-lang.org/rhombus-guide/index.html),
-   Racket's non-parenthesized surface syntax.
-6. Status quo: no embedded scripting language.
-
-## Decision Outcome
-
-Chosen option 3: libriscv embeds in the Flow server as the execution
-substrate, and s7 Scheme (a Lisp-1, also distributed as a single portable
-C file, built for embedding, with a track record in real-time/low-latency
-embedding contexts such as the Snd and CLM audio tools) compiles to
-RISC-V as the guest language. Script authors write shrubbery notation,
-not parenthesized s-expressions - a shrubbery-style reader sits in front
-of s7 and translates indentation-based grouping into s7's ordinary
-s-expression form before evaluation, so the language a mission-script or
-loot-table author sees has no visible parentheses even though s7 itself
-still evaluates a Lisp-1 underneath. That reader is the follow-up work
-already noted below (no such reader exists yet, for s7 or independent of
-Racket's own reference implementation); this ADR fixes it as the intended
-surface syntax, not an optional idea. A Flow actor calls into guest functions
-through libriscv's documented VMCALL pattern, under a
-`machine.simulate(max_instructions)` fuel limit and an explicit
-per-syscall allowlist — the same call shape `fanout-core`'s exported FFI
-functions already use from the Flow side. Lean4's scope stays exactly
-where it is: `fanout-core`'s dispatch, `sketch-core`'s convergence graph,
-and the beautify solver's boundary (ADR 0003) remain the formally
-verified, property-tested kernel. The sandboxed s7 guest is an additional
-tier underneath that kernel, for simulation content — mission scripts,
-loot tables, NPC behavior — that changes often enough that a Lean4 proof
-per change is expensive, while still needing to replay identically on
-every peer.
-
-Option 2 (Janet-as-guest) loses to option 3 on footprint: Janet's
-built-in fibers, event loop, and socket I/O assume the language owns its
-own scheduling and I/O, all of which need stripping or stubbing for a
-freestanding RISC-V build where the guest is supposed to have none of
-those things by construction. s7 carries no such subsystems to remove.
-Janet stays available as a fallback guest language if ecosystem size or
-existing familiarity outweighs footprint later.
-
-Option 1 (a native scripting layer for dev/debug REPL tooling against the
-fanout/sketch FFI, and for the not-yet-written cert-mint script from ADR
-0002) answers a narrower, still-real question, but it does not put any
-scripted logic on the determinism-critical path, which option 3 does. It
-is not Janet, though: this devtool role is served by the same source —
-s7 plus the shrubbery-style reader — built natively for the dev machine
-against the system's ordinary libc, rather than cross-compiled to a
-freestanding RISC-V guest against the hand-built minimal libc option 3
-needs. One language and one surface syntax across both roles, two build
-targets: a native host binary (devtools, linked normally, no sandbox
-needed since nothing here touches replicated state) and a freestanding
-RISC-V guest (option 3's sandboxed tier). This removes Janet from the
-picture entirely, superseding the earlier framing in the Context section
-above. The native devtool build is not implemented in this pass.
-
-Option 4 is investigated and rejected on two independent grounds. First,
-the Lisp-1/Lisp-2 landscape on BEAM is narrow: LFE (Lisp Flavoured
-Erlang) is the mature, actively maintained option, and it is a Lisp-2;
-the one Lisp-1 BEAM dialect, Joxa, is Clojure-inspired but has shown no
-sign of active maintenance since its docs settled on a `v0.1.0`
-readthedocs page. Second, and independent of that gap, neither AtomVM nor
-any BEAM Lisp addresses this ADR's actual problem: BEAM's scheduler,
-garbage collector, and floating point carry no bit-identical-replay
-guarantee across hosts the way libriscv's RISC-V instruction emulation
-does, so adopting AtomVM moves no workload onto Flow's
-determinism-critical path — it only duplicates the boundary the README
-already draws for Elixir/OTP, a peer process connecting to Flow over
-HTTP/3, never something spawned by or embedded in the Flow process.
-
-Option 5 is investigated and rejected on the same footprint grounds as
-option 2, more severely. Rhombus is a surface syntax built on Racket —
-"Rhombus is built on Racket, and it is extensible in the same way as
-Racket, but Rhombus uses a more conventional expression syntax" — not an
-independent implementation; it carries the full Racket/Chez Scheme
-runtime underneath (its own GC, JIT/AOT compilation pipeline, module and
-bytecode loader), the same way Rhombus code still runs on Racket's `raco`
-toolchain. Nothing in Racket's or Rhombus's documentation describes
-static-linking into a minimal freestanding binary the way s7 and Janet
-both do; Racket's own embedding guide assumes a full Racket runtime
-environment (`scheme_dynamic_require`, `.zo` bytecode loading) present at
-the embedding site, not a self-contained guest with no OS underneath.
-Racket is a Lisp-1 like s7 and Janet, but weight, not namespace
-discipline, is what rules it out here.
-
-Shrubbery notation (https://docs.racket-lang.org/shrubbery/index.html),
-the indentation-based grouping layer Rhombus itself is built from, is a
-narrower and separable idea from option 5: its own documentation
-describes it as text-level conventions that "partially group input" and
-"leave further parsing to another layer," independent of Racket's macro
-expander or runtime. That separability is exactly why option 3 adopts it
-as s7's surface syntax while rejecting option 5 outright: a
-shrubbery-style reader in front of s7 only changes how source text is
-parsed into s-expressions, never what runs in the guest, so it costs
-nothing against the freestanding-build goal that ruled out Racket itself.
-No such reader exists today, for s7 or anywhere outside Racket's own
-reference implementation - building it is part of the unstarted work this
-ADR records, not a finished design.
-
-Option 6 remains the shipping state until this tier is actually built.
-
-### Consequences
-
-- Good: scripted simulation content gets a path onto the
-  determinism-critical side of the codebase without requiring a Lean4
-  proof for every change, while keeping replay bit-identical across
-  peers.
-- Good: fuel metering gives every scripted call a bounded, identical
-  worst-case cost on every peer; the syscall allowlist keeps the guest's
-  I/O surface at zero unless Flow explicitly grants specific syscalls.
-- Good: s7's freestanding-build surface is smaller than Janet's, since it
-  carries no built-in networking or event loop to disable.
-- Bad: this vendors a second C runtime and a new cross-compilation-to-
-  RISC-V build step, on top of the existing Lean4/CMake/vcpkg/Python
-  toolchain.
-- Bad: the VMCALL wiring into a Flow actor, the shrubbery-style reader in
-  front of s7, and re-running the existing FP-stress byte-compare gate
-  (ADR 0004's precedent) against s7's execution are all unstarted work —
-  this ADR records the direction, not a finished design.
-- Bad: a devtool-only native scripting layer (REPL, cert-mint script)
-  stays an open, separate question this ADR does not resolve.
+Good: scripted content gets a path onto the determinism-critical side of
+the codebase without a Lean4 proof per change, while staying
+replay-identical across peers; fuel metering bounds worst-case cost
+identically on every peer; s7's freestanding-build surface is smaller
+than Janet's (no networking/event loop to strip). Bad: this vendors a
+second C runtime and a new RISC-V cross-compilation step; the shrubbery
+reader, syscall narrowing, and FP-stress re-verification remain
+unstarted work; a devtool-only native scripting layer stays a separate,
+unresolved question.

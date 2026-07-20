@@ -71,27 +71,35 @@ adopts.
   `EXECCOMMAND` channel) — a tool that happens to be playable, not a
   game client that happens to have a debug console.
 
-  **The terminal UI itself is hand-built, not adopted off the shelf**
-  — an initial "use an existing RCON client so this repo writes zero
-  terminal-UI code" direction was tried and reversed. Two real
-  candidates were checked directly (not assumed): `radj307/ARRCON`
-  (GPL-3.0, genuine Source RCON protocol compliance, cross-platform,
-  interactive shell mode — no release since April 2023, and its
-  license alone would rule it out for anything beyond an external
-  demo tool: this repo is MIT-licensed throughout, GPL-3.0 code can't
-  be vendored or linked into it) and `OpenRcon/OpenRcon` (GPL-3.0,
-  C++, cross-platform — **archived** as of April 2026, repository now
-  read-only, same license incompatibility). Neither is a foundation
-  worth building a demo on, or one this repo could legally absorb
-  even if it were. Given the terminal needed building anyway, built
-  with **Textual** (Python's TUI framework, MIT-licensed — verified,
-  not assumed, since the license constraint is exactly why the two
-  GPL-3.0 candidates above were rejected) — the same stack (confirmed
-  via the repo's own topics: `textual`, `tui`) behind the user's own
-  well-received prior work, `fire/jobs-lazy-onboarding` ("offline
-  terminal app... using an on-device ONNX model over a normalized
-  SQLite database"), reused here for its proven visual/UX quality
-  rather than reinvented from a blank terminal.
+  **The terminal UI itself is hand-built, not adopted off the shelf,
+  and built in C++, not Python.** An initial "use an existing RCON
+  client so this repo writes zero terminal-UI code" direction was
+  tried and reversed. Two real candidates were checked directly (not
+  assumed): `radj307/ARRCON` (GPL-3.0, genuine Source RCON protocol
+  compliance, cross-platform, interactive shell mode — no release
+  since April 2023, and its license alone would rule it out for
+  anything beyond an external demo tool: this repo is MIT-licensed
+  throughout, GPL-3.0 code can't be vendored or linked into it) and
+  `OpenRcon/OpenRcon` (GPL-3.0, C++, cross-platform — **archived** as
+  of April 2026, repository now read-only, same license
+  incompatibility). Neither is a foundation worth building a demo on,
+  or one this repo could legally absorb even if it were.
+
+  Given the terminal needed building anyway, a Python-based direction
+  using **Textual** (matching the stack behind the user's own well-
+  received prior work, `fire/jobs-lazy-onboarding`) was drafted and
+  then reversed again: this repo is adding Python to its own
+  blocklist, so no new Python code goes in regardless of the
+  library's own merits. Landed instead on **FTXUI**
+  (`ArthurSonzogni/FTXUI`, MIT-licensed - verified, not assumed, since
+  license compatibility is exactly why the GPL-3.0 candidates above
+  were rejected) - a C++ functional terminal-UI library, actively
+  maintained (fuzzers, performance tests, CI). This is a better fit
+  than Textual turned out to be, not just a compliant one: it needs no
+  new language or runtime in a C++/Flow/CMake codebase, and the
+  default adapter can link `fanout_load_client`'s existing QUIC/ZPB
+  connection code (`runOnePlayer`, `runManyPlayers`) directly rather
+  than bridging across a process/language boundary to reach it.
 
 ## Consequences
 

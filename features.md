@@ -54,8 +54,8 @@ effects to only the players who'd actually see them.
 - [ ] Three s7 Lisp spell scripts (bolt/heal/shield) mapping sigil shape
   parameters to effect + magnitude + duration — no scripted content
   exists yet, only the sandbox mechanism (ADR 0006)
-- [ ] Default adapter: a headless, RCON-compatible terminal (Python +
-  Textual, MIT-licensed — see
+- [ ] Default adapter: a headless, RCON-compatible terminal (C++ +
+  FTXUI, MIT-licensed — see
   [ADR 0050](docs/decisions/0050-hexagonal-ports-adapters-rcon-default-adapter-supersedes-0010.md))
   that speaks the real Source RCON wire protocol, internally acting as
   a ZPB client (reusing `fanout_load_client`'s proven QUIC/ZPB

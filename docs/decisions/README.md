@@ -33,3 +33,4 @@ weft-warp-loop stack. One decision per file, numbered in acceptance order.
 - [0028 — Interpret s7 as the primary execution path; AOT-compilation is a deferred, optional optimization (supersedes 0014)](0028-interpret-first-compile-later-supersedes-0014.md)
 - [0029 — Console-grade guest/host data structures, referencing godot-sandbox's actual ABI](0029-console-grade-guest-host-data-structures.md)
 - [0030 — Hand-ported Scheme content lives under riscv-guests/content/, verified against a Lean4 golden vector](0030-ported-content-lives-under-riscv-guests-content.md)
+- [0031 — Combat and progression ported to s7; filter is not a builtin in this s7 build](0031-combat-and-progression-ported-filter-not-builtin.md)

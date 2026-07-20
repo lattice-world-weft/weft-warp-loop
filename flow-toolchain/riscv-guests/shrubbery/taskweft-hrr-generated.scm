@@ -1,0 +1,7 @@
+(define (hrr-bind a b) (lambda (i) (+ (a i) (b i))))
+(define (hrr-unbind memory key) (lambda (i) (- (memory i) (key i))))
+(define (hrr-encode-fact content entity) (hrr-bind content entity))
+(define (hrr-zero ) (lambda (i) 0))
+(define (hrr-neg a) (lambda (i) (- (a i))))
+(define (hrr-bundle a b) (lambda (i) (+ (a i) (b i))))
+(define (hrr-diff a b) (lambda (i) (- (a i) (b i))))

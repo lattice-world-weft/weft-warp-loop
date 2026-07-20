@@ -295,8 +295,44 @@ structure Zone where
   entities : Array EntityRecord
   deriving Repr, Inhabited
 
+/-- Hard ceiling on one zone's live authority membership -
+    `AuthorityInterest.lean`'s `cap-headroom`, independent of and on top of
+    cost-driven splitting (`Partition.lean`'s `splitIsCheaper`): splitting
+    bounds population *in the common case* by giving a dense zone more,
+    smaller children, but it bottoms out at `octreeMaxDepth` (a single
+    curve-index cell - `Zone.lean`'s own quantization granularity), so
+    however many entities land in the exact same cell (or close enough
+    that no further split ever separates them - real, not hypothetical:
+    a stationary crowd, a coordinate clamp bug on some client, deliberate
+    abuse) have nowhere left to split into. This is a genuine resource-
+    safety ceiling, not a value math could derive from per-connection
+    data (unlike `hysteresisTicksFor`/RTT-derived lookahead, this doesn't
+    vary per entity or improve with a better measurement - it exists so
+    one degenerate cell can't grow this zone's own `Θ(population^2)`
+    fanout cost or entity-array size without bound), the same role
+    `SlotMap`'s fixed `capacity` already plays for room/zone allocation
+    itself. Not derived from any measured load yet - large enough that
+    ordinary crowding (this project's own `ScaleScratch.lean` benchmark
+    measured max 5 in a *well-split* zone) never comes close, small
+    enough to still bound worst-case cost to something sub-catastrophic. -/
+def authorityCapacity : Nat := 256
+
+/-- Hard ceiling on how many *interest* (adjacent-zone, ghost-range)
+    targets a single publish fans out to - `AuthorityInterest.lean`'s
+    `InterestCapacity` (that project's own value: 400, validated at real
+    production scale against VRChat's Kaguya concert), reused directly
+    since interest-list size is exactly the same kind of message-fanout
+    safety bound at any project's scale, not something specific to this
+    project's own cost model the way `authorityCapacity` is. Applies only
+    to the interest portion of `targetsForIndex`'s result, not authority
+    membership (already separately bounded by `authorityCapacity`) - the
+    same authority/interest separation `AuthorityInterest.lean` keeps
+    independently budgeted. -/
+def interestCapacity : Nat := 400
+
 def Zone.sub (z : Zone) (rec : EntityRecord) : Zone :=
   if z.entities.any (·.connId == rec.connId) then z
+  else if z.entities.size >= authorityCapacity then z
   else { z with entities := z.entities.push rec }
 
 def Zone.unsub (z : Zone) (connId : UInt64) : Zone :=

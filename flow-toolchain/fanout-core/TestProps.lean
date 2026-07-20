@@ -292,6 +292,45 @@ def hysteresisAbsorbsOscillationCheck (lens : List Nat) (connId idxA idxB rounds
       | none => false
   | _, _ => true
 
+/-- True iff a single zone's live authority membership never exceeds
+    `authorityCapacity`, even when far more entities than that keep
+    trying to join the *same* single-point cell (a range of length 1 -
+    `octreeMaxDepth`, nowhere further to split into, the exact degenerate
+    case `authorityCapacity` exists for). `n` is bounded (`% 500`, well
+    past `authorityCapacity`'s value) to keep the check fast while still
+    exercising the cap. -/
+def authorityCapacityCheck (n : Nat) : Bool :=
+  let n := n % 500
+  let w := ZoneWorld.empty (n + 8) 21
+  match w.allocZone { start := 0, stop := 1 } with
+  | none => true
+  | some (w', zid) =>
+    let wf := (List.range n).foldl (fun acc i => acc.moveEntityToIndex i.toUInt64 0) w'
+    match wf.zones.find zid with
+    | none => false
+    | some z => z.entities.size <= authorityCapacity
+
+/-- True iff `targetsForIndex`'s *interest* portion (adjacent-zone, ghost-
+    range targets) never exceeds `interestCapacity`, even when every
+    candidate entity in the adjacent zone genuinely passes the ghost-range
+    check (all default zero position/velocity, so `withinGhostRange` is
+    trivially true for all of them - the real filtering isn't what's
+    supposed to bound this, the cap is). Two adjacent unit zones: the
+    publisher alone in the authority zone at index 0, `n` (bounded, well
+    past `interestCapacity`) entities in the neighbouring zone at index 1. -/
+def interestCapacityCheck (n : Nat) : Bool :=
+  let n := n % 600
+  let w := ZoneWorld.empty (n + 8) 21
+  match w.allocZone { start := 0, stop := 1 } with
+  | none => true
+  | some (w1, _) =>
+    match w1.allocZone { start := 1, stop := 2 } with
+    | none => true
+    | some (w2, _) =>
+      let w3 := w2.moveEntityToIndex 0 0
+      let wf := (List.range n).foldl (fun acc i => acc.moveEntityToIndex (i + 1).toUInt64 1) w3
+      (wf.targetsForIndex 0 0).size <= interestCapacity
+
 /-- True iff `targetsForIndex` never includes the publisher itself. -/
 def targetsExcludePublisherCheck (lens : List Nat) (connId idx : Nat) : Bool :=
   let w := zoneWorldFromLengths 8 lens
@@ -717,5 +756,13 @@ def main : IO Unit := do
      NamedBinder "idxB" <| ∀ (idxB : Nat),
      NamedBinder "rounds" <| ∀ (rounds : Nat),
       hysteresisAbsorbsOscillationCheck lens connId idxA idxB rounds = true) cfg
+
+  runCheck "a single zone's authority membership never exceeds authorityCapacity"
+    (NamedBinder "n" <| ∀ (n : Nat),
+      authorityCapacityCheck n = true) cfg
+
+  runCheck "targetsForIndex's interest portion never exceeds interestCapacity"
+    (NamedBinder "n" <| ∀ (n : Nat),
+      interestCapacityCheck n = true) cfg
 
   IO.println "ALL PROPERTY TESTS PASSED"

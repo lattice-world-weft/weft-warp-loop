@@ -101,12 +101,23 @@ def ZoneWorld.targetsForIndex (w : ZoneWorld) (publisherConnId : UInt64) (idx : 
       for rec in authZone.entities do
         if rec.connId != publisherConnId then
           result := result.push rec.connId
+      -- Interest (adjacent-zone, ghost-range) targets are capped
+      -- separately from authority membership above
+      -- (`interestCapacity` - `AuthorityInterest.lean`'s own budget,
+      -- independent of `authorityCapacity`): once this many interest
+      -- targets have been added to this publish, no further
+      -- adjacent-zone scanning happens, matching that project's own
+      -- authority/interest capacity separation.
+      let mut interestCount := 0
       for j in adjacentZones plain authIdx do
-        if h2 : j < plain.size then
-          for rec in plain[j].entities do
-            if rec.connId != publisherConnId &&
-               withinGhostRange pubPos pubVx pubVy pubVz pubK rec.pos rec.vx rec.vy rec.vz rec.lookaheadTicks then
-              result := result.push rec.connId
+        if interestCount < interestCapacity then
+          if h2 : j < plain.size then
+            for rec in plain[j].entities do
+              if interestCount < interestCapacity then
+                if rec.connId != publisherConnId &&
+                   withinGhostRange pubPos pubVx pubVy pubVz pubK rec.pos rec.vx rec.vy rec.vz rec.lookaheadTicks then
+                  result := result.push rec.connId
+                  interestCount := interestCount + 1
       return result
     else return #[]
 

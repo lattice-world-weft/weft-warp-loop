@@ -40,3 +40,4 @@ weft-warp-loop stack. One decision per file, numbered in acceptance order.
 - [0035 — taskweft's HTN forward-decomposition core, ported to shrubbery, verified against a real domain](0035-taskweft-lite-htn-forward-decomposition-ported-to-shrubbery.md)
 - [0036 — Taskweft port Layer 0: Types.lean's SolutionTree/e-graph model, not the simpler find_plan doc account](0036-taskweft-layer0-types-solutiontree-egraph-model.md)
 - [0037 — The shrubbery reader itself ported to s7, verified against the Python version's own output](0037-shrubbery-reader-ported-to-s7-verified-against-python.md)
+- [0038 — Taskweft port Layer 1 complete: planner core, MultiGoalDecomposition confirmed empty](0038-taskweft-layer1-planner-core-complete.md)
